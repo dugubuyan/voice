@@ -1,0 +1,5 @@
+# 语音层依赖（可选，后续上语音时再安装）
+# pip install -r requirements-voice.txt
+pipecat-ai[elevenlabs,openai,silero]>=0.0.60
+fastapi>=0.110
+uvicorn>=0.29

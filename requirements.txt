@@ -1,0 +1,6 @@
+# 核心依赖（离线业务闭环 + 文本演示可跑，仅对话需要 OpenAI key）
+SQLAlchemy>=2.0,<3.0
+APScheduler>=3.10
+openai>=1.30
+python-dotenv>=1.0
+pytest>=8.0
