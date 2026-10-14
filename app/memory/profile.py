@@ -32,14 +32,31 @@ class ProfileRepository:
         prefs = elder.preferences or {}
         pref_text = "；".join(f"{k}：{v}" for k, v in prefs.items()) or "暂无"
         meds = elder.medications or []
-        med_text = "、".join(f"{m.name}({m.dose})" for m in meds) or "无"
+        _timing_map = {"before_meal": "饭前", "after_meal": "饭后", "anytime": "随时"}
+
+        def _med_str(m) -> str:
+            times = m.times or []
+            timing_cn = _timing_map.get(m.timing or "", "")
+            if not times:
+                return f"{m.name}({m.dose})"
+            parts = [m.dose, f"每天{'、'.join(times)}"]
+            if timing_cn:
+                parts.append(timing_cn)
+            return f"{m.name}({', '.join(parts)})"
+
+        med_text = "、".join(_med_str(m) for m in meds) or "无"
+        address_text = elder.address or "暂无记录"
+        allergies_text = "、".join(elder.allergies or []) or "暂无已知过敏"
         return (
             f"老人姓名：{elder.name}\n"
             f"年龄：{elder.age}岁，性别：{elder.gender or '未知'}\n"
+            f"家庭住址：{address_text}\n"
             f"慢性病：{conditions}\n"
+            f"过敏史：{allergies_text}\n"
             f"常用药物：{med_text}\n"
             f"家属联系人：{contact_text}\n"
             f"方言/语言：{elder.dialect}\n"
             f"偏好与习惯：{pref_text}\n"
-            f"备注：{elder.notes or '无'}"
+            f"备注：{elder.notes or '无'}\n"
+            f"（以上为结构化档案记录，回答住址/过敏史/用药等务必以此为准，没有记录就如实说暂无，不要编造）"
         )

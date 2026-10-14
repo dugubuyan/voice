@@ -1,96 +1,17 @@
-"""LLM 可调用的工具：层2事件记忆的按需查询入口。
+"""确定性查询函数（供意图路由调用）。
 
-工具定义（schema）供 LLM 决策用，工具执行（executor）负责真正查 DB。
-LLM 只决定"要不要查、查什么参数"，精确数字永远来自 DB，不靠 LLM 背诵。
+精确数据只来自 DB，不面向 LLM function-calling。
+execute_tool 与各 _exec_query_* 执行函数是唯一精确查询入口。
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import date
 from typing import Callable
 
 from sqlalchemy.orm import Session
 
 from app.memory.events import EventStore
-
-# ──────────────────────────────────────────────
-# 工具 schema（OpenAI function-calling 格式）
-# ──────────────────────────────────────────────
-
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_health_records",
-            "description": (
-                "查询老人最近的健康数据，包括血压、血糖、心率、体温、体重。"
-                "当老人询问自己的健康指标或历史趋势时调用此工具。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": [
-                            "blood_pressure", "blood_sugar",
-                            "heart_rate", "temperature", "weight", "all"
-                        ],
-                        "description": "要查询的指标类型，all 表示查所有",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "返回最近几条记录，默认 5",
-                        "default": 5,
-                    },
-                },
-                "required": ["kind"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_medication_history",
-            "description": (
-                "查询老人的服药记录，包括今天/最近是否按时服药、漏服情况。"
-                "当老人询问自己的服药情况时调用此工具。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "days": {
-                        "type": "integer",
-                        "description": "查最近几天的记录，默认 3",
-                        "default": 3,
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_emergency_history",
-            "description": (
-                "查询老人最近的紧急事件记录。"
-                "当老人或家属询问最近有没有发生过不适/紧急情况时调用。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "返回最近几条，默认 3",
-                        "default": 3,
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-]
 
 # ──────────────────────────────────────────────
 # 工具执行层
@@ -164,6 +85,37 @@ def _exec_query_medication(session: Session, elder_id: int, args: dict) -> str:
     return "\n".join(results)
 
 
+def _exec_query_medication_schedule(session: Session, elder_id: int, args: dict) -> str:
+    """查询该老人全部用药计划，渲染为中文话术。"""
+    from sqlalchemy import select
+
+    from app.models import Medication
+
+    _TIMING_CN = {
+        "before_meal": "饭前",
+        "after_meal": "饭后",
+        "anytime": "随时",
+    }
+
+    meds = session.execute(
+        select(Medication).where(Medication.elder_id == elder_id)
+    ).scalars().all()
+
+    if not meds:
+        return "您现在没有在管的用药安排。"
+
+    parts = []
+    for med in meds:
+        timing_cn = _TIMING_CN.get(med.timing, med.timing)
+        if med.times:
+            times_str = "、".join(med.times)
+            parts.append(f"{med.name}：每天 {times_str}（{timing_cn}）{med.dose}")
+        else:
+            parts.append(f"{med.name}：{med.dose}（{timing_cn}）")
+
+    return "您的用药安排是：" + "；".join(parts)
+
+
 def _exec_query_emergency(session: Session, elder_id: int, args: dict) -> str:
     store = EventStore(session)
     limit = int(args.get("limit", 3))
@@ -184,6 +136,7 @@ _EXECUTORS: dict[str, Callable] = {
     "query_health_records": _exec_query_health,
     "query_medication_history": _exec_query_medication,
     "query_emergency_history": _exec_query_emergency,
+    "query_medication_schedule": _exec_query_medication_schedule,
 }
 
 

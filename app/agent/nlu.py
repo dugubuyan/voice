@@ -24,10 +24,13 @@ INTENT_SPECS = {
     "record_health": "老人报告了健康数值，槽位 kind(blood_pressure/blood_sugar/heart_rate/temperature/weight)、value、unit",
     "record_appointment": "老人提到医疗相关的预约/安排（复查/体检/门诊/看病），槽位 title、date_iso、time、persons、location",
     "remember_note": "老人明确要求记住某件事（非医疗预约），如'记一下''别忘了提醒我'，槽位 content、date_iso、persons",
-    "query_medication": "老人询问自己的服药情况，槽位 scope(today/history)、days",
+    "query_medication": "老人询问自己的服药情况，槽位 scope(today（是否已服）/ history（服药记录）/ schedule（查询计划服药时间表））、days；schedule 触发例句：我几点吃药 / 我一般几点吃药 / 什么时候该吃药 / 我的吃药时间",
     "query_health": "老人询问自己的健康数据/趋势，槽位 kind、days",
     "query_appointment": "老人询问自己的预约/日程安排",
     "query_emergency": "老人或家属询问最近的紧急/不适事件记录",
+    "enter_setup": "请求进入设置模式来修改档案，槽位 passcode（口令）；例句：进入设置模式 口令1234 / 我要设置资料 密码1234",
+    "exit_setup": "结束/退出设置模式，回到日常陪护；例句：退出设置 / 设置好了 / 完成设置",
+    "update_profile": "在设置模式里为老人档案的某个字段赋值，槽位 field(address住址/allergies过敏史/conditions慢性病/contacts紧急联系人/medication用药) + value 及相应子槽位(name/relation/phone/dose/times/timing)；例句：家住浦东新区滨江大道4600号 / 他对青霉素过敏 / 紧急联系人女儿李梅电话13800000001",
     "chitchat": "以上都不是，普通闲聊/情感陪伴",
 }
 

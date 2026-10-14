@@ -64,13 +64,34 @@ class NoteStore:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add_note(self, elder_id: int, note: ExtractedNote) -> MemoryNote:
+    def add_note(
+        self,
+        elder_id: int,
+        note: ExtractedNote,
+        *,
+        source_episode_id: int | None = None,
+        confidence: str = "certain",
+        source: str = "explicit",
+    ) -> MemoryNote:
+        """写入一条事实记忆。
+
+        Phase 3 可选参数（均有默认，保证向后兼容）：
+          source_episode_id: 该事实来源情景 id，写入 MemoryNote.source_episode_id；
+                             不传则为 None（与旧行为一致）。
+          confidence: "certain"/"uncertain"，写入 MemoryNote.confidence；
+                      不传默认 "certain"（与旧行为一致）。
+          source: "explicit"/"reflection"/"setup"，写入 MemoryNote.source；
+                  设置模式录入的权威事实用 "setup"（不被存疑抽取取代）。
+        """
         row = MemoryNote(
             elder_id=elder_id,
             content=note.content,
             kind=note.kind,
             remind_date=note.date_iso,
             active=True,
+            confidence=confidence,
+            source=source,
+            source_episode_id=source_episode_id,
         )
         self._session.add(row)
         self._session.flush()

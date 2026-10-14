@@ -17,7 +17,6 @@ from __future__ import annotations
 
 REFERENCE_PIPELINE = '''
 import os
-import uuid
 import asyncio
 import aiohttp
 
@@ -41,23 +40,41 @@ from app.notify.notifier import ConsoleNotifier
 
 
 class BrainProcessor(FrameProcessor):
-    """把 STT 文本交给业务大脑，产出回复文本给 TTS。"""
+    """把 STT 文本交给业务大脑，产出回复文本给 TTS。
+
+    宿主循环（pipeline runner）除了把每轮 STT 文本喂给 brain.process_turn 外，
+    还应每 config.pulse_interval_sec 秒调用一次 brain.on_pulse(datetime.now())，
+    以驱动沉默期的记忆巩固 / 前瞻过期 / 近期原文清理 / 主动关心等条件触发
+    （TriggerEngine 的低频时钟源）。on_turn 只覆盖「有对话时」的触发，
+    沉默期的周期性记忆工作必须靠 on_pulse 推动。
+
+    参考接线（骨架，未启用）：起一个 asyncio 后台任务，
+        while True:
+            await asyncio.sleep(config.pulse_interval_sec)
+            await asyncio.to_thread(brain.on_pulse, datetime.now())
+    on_pulse 内部已做失败隔离，异常不会影响语音主循环；CLI 的 /tick 指令
+    与测试注入固定 now 走的是同一入口，便于离线确定性验证。
+    """
 
     def __init__(self, elder_id: int):
         super().__init__()
         self._session = SessionLocal()
         self._brain = Brain(self._session, get_llm(), ConsoleNotifier(self._session))
-        self._sid = uuid.uuid4().hex
-        greeting = self._brain.start_session(elder_id, self._sid)
+        self._elder_id = elder_id
+        # Phase 3：惰性初始化该老人的常驻运行态（首次加载会从 RecentTurn 落盘
+        # 恢复近期窗口，需求 8.2）。不再有 start_session/会话 id 概念——记忆按
+        # elder_id 常驻，CLI 与语音共用同一 Brain.process_turn(elder_id, text)。
+        self._brain.get_runtime(elder_id)
         self._session.commit()
-        self._greeting = greeting
+        # 问候语用固定招呼；如需更个性化可从 runtime/画像取。
+        self._greeting = "哎，我在呢。今天感觉怎么样呀？"
 
     async def process_frame(self, frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame) and frame.text:
             # 业务逻辑是同步的，放到线程池避免阻塞事件循环
             result = await asyncio.to_thread(
-                self._brain.process_turn, self._sid, frame.text
+                self._brain.process_turn, self._elder_id, frame.text
             )
             self._session.commit()
             await self.push_frame(TextFrame(result.reply), FrameDirection.DOWNSTREAM)

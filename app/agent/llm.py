@@ -1,36 +1,12 @@
-"""LLM 接口：OpenAI 兼容客户端（支持 tool calling）+ 离线 Fake 实现。
+"""LLM 接口：OpenAI 兼容客户端 + 离线 Fake 实现。
 
-- chat()            : 普通文本对话（摘要、记忆提取等确定性任务用）
-- chat_with_tools() : 带工具调用的对话，返回 (reply, tool_calls)
-                      tool_calls 为空列表时表示 LLM 直接回答，无需调工具
+- chat() : 普通文本对话（摘要、记忆提取、意图识别、回复生成等任务用）
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from app.config import config
-
-
-# ──────────────────────────────────────────────
-# 工具调用返回结构
-# ──────────────────────────────────────────────
-
-@dataclass
-class ToolCall:
-    call_id: str
-    name: str
-    arguments: str   # JSON 字符串，由 execute_tool 解析
-
-
-@dataclass
-class ChatResponse:
-    content: str           # LLM 直接生成的文字（tool_calls 非空时可能为空）
-    tool_calls: list[ToolCall]
-
-    @property
-    def has_tool_calls(self) -> bool:
-        return bool(self.tool_calls)
 
 
 # ──────────────────────────────────────────────
@@ -39,9 +15,9 @@ class ChatResponse:
 
 class LLMClient(Protocol):
     def chat(self, messages: list[dict]) -> str: ...
-    def chat_with_tools(
-        self, messages: list[dict], tools: list[dict]
-    ) -> ChatResponse: ...
+    def stream_chat(self, messages: list[dict]):
+        """流式生成，yield str token。非流式实现可直接 yield chat() 整体结果。"""
+        ...
 
 
 # ──────────────────────────────────────────────
@@ -57,7 +33,6 @@ class FakeLLMClient:
             if m.get("role") == "user":
                 user = m.get("content", "")
                 break
-
         # 紧急安抚话术（离线回退模板）
         if "【安抚回复】" in user:
             if "已经立刻通知了所有家属" in user:
@@ -73,6 +48,18 @@ class FakeLLMClient:
         # 增量折叠摘要 prompt
         if "【折叠摘要任务】" in user:
             return self._fake_fold(user)
+
+        # 语义边界检测 prompt（默认判定为非边界，保证离线确定性）
+        if "【边界检测】" in user:
+            return '{"is_boundary": false, "cut_index": 0}'
+
+        # 记忆抽取 prompt（离线返回结构合法 JSON，事实/前瞻/人物可为空）
+        if "【记忆抽取】" in user:
+            return self._fake_memcell(user)
+
+        # 记忆巩固 prompt（离线返回结构合法 JSON：至少一个 scene + profile + trends）
+        if "【记忆巩固】" in user:
+            return self._fake_consolidate(user)
 
         # 反思任务（ReflectionEngine）
         if "【反思任务】" in user:
@@ -93,6 +80,70 @@ class FakeLLMClient:
         if "?" in user or "？" in user:
             return "这个我记下了，回头帮您问问家里人，您先别急。"
         return "嗯，我听着呢，您慢慢说。"
+
+    def stream_chat(self, messages: list[dict]):
+        """FakeLLM 流式：整体结果一次 yield，保测试简单。"""
+        yield self.chat(messages)
+
+    def _fake_memcell(self, prompt: str) -> str:
+        """离线记忆抽取存根：取本段对话首句作情景摘要，返回结构合法 JSON。
+
+        事实/前瞻/人物离线一律为空，保证可解析且结构合法（需求 13）。
+        """
+        import json as _json
+        import re
+        m = re.search(r"【本段对话】\n(.+)$", prompt, re.DOTALL)
+        lines = (m.group(1).strip() if m else "").splitlines()
+        first_line = lines[0][:60] if lines else ""
+        summary = (first_line or "闲聊了几句").strip()
+        return _json.dumps(
+            {
+                "episode_summary": summary,
+                "mood": "平静",
+                "topics": [],
+                "atomic_facts": [],
+                "foresights": [],
+                "persons": [],
+            },
+            ensure_ascii=False,
+        )
+
+    def _fake_consolidate(self, prompt: str) -> str:
+        """离线记忆巩固存根：把全部待巩固情景归并到一个固定主题场景，
+        重写一份简短画像，并给出不含编造数值的趋势，保证离线可解析（需求 13）。
+
+        - scene：固定主题（便于测试「同 theme 唯一 active」），member_indices 覆盖
+          prompt 中出现的全部情景下标 [i]。
+        - profile：固定短文本（整体重写，长度有界）。
+        - trends：mood 趋势恒有；仅当 prompt 含结构化健康读数时再给 health 趋势，
+          且描述不含任何编造数值（数值溯源交由结构化源）。
+        """
+        import json as _json
+        import re
+
+        indices = [int(m) for m in re.findall(r"^\[(\d+)\]", prompt, re.MULTILINE)]
+        trends = [{"kind": "mood", "content": "情绪总体平稳，愿意聊天。"}]
+        # prompt 的【健康读数】小节若含结构化读数行（以 "- " 开头），才给健康趋势
+        health_m = re.search(r"【健康读数】\n(.+)$", prompt, re.DOTALL)
+        health_section = health_m.group(1) if health_m else ""
+        if re.search(r"^- ", health_section, re.MULTILINE):
+            trends.append(
+                {"kind": "health", "content": "近期健康读数总体平稳，具体数值以结构化记录为准。"}
+            )
+        return _json.dumps(
+            {
+                "scenes": [
+                    {
+                        "theme": "日常点滴",
+                        "summary": "近期与老人的若干段日常对话，情绪平稳。",
+                        "member_indices": indices,
+                    }
+                ],
+                "profile": "老人近期状态平稳，喜欢聊天，作息规律。（离线巩固存根）",
+                "trends": trends,
+            },
+            ensure_ascii=False,
+        )
 
     def _fake_fold(self, prompt: str) -> str:
         """离线折叠摘要存根：拼接已有摘要与新对话首句。"""
@@ -119,6 +170,44 @@ class FakeLLMClient:
 
         m = re.search(r"老人说：(.+)$", prompt, re.DOTALL)
         text = m.group(1).strip() if m else ""
+
+        # ---- 设置模式意图（profile-setup-mode）：高信号，命中即单意图返回 ----
+        if any(k in text for k in ["进入设置", "设置模式", "我要设置", "修改资料", "修改档案"]):
+            mp = re.search(r"(?:口令|密码)\s*[:：]?\s*([0-9A-Za-z]+)", text) or re.search(r"([0-9]{3,})", text)
+            return _json.dumps(
+                {"intents": [{"name": "enter_setup", "slots": {"passcode": mp.group(1) if mp else ""}}]},
+                ensure_ascii=False,
+            )
+        if any(k in text for k in ["退出设置", "设置好了", "设置完了", "完成设置", "结束设置", "不设置了"]):
+            return _json.dumps({"intents": [{"name": "exit_setup", "slots": {}}]}, ensure_ascii=False)
+
+        up_slots = None
+        ma = re.search(r"对(.+?)过敏", text)
+        if ma:
+            up_slots = {"field": "allergies", "value": ma.group(1)}
+        elif "过敏" in text:
+            up_slots = {"field": "allergies", "value": text.replace("过敏", "").strip("，。 、的")}
+        elif any(k in text for k in ["家住", "住址", "地址", "家在", "住在"]):
+            val = text
+            for cue in ["我家住在", "家庭住址是", "家住址是", "家住址", "家住", "住址是",
+                        "住址", "地址是", "地址", "家在", "住在"]:
+                val = val.replace(cue, "")
+            up_slots = {"field": "address", "value": val.strip("，。 、的是")}
+        elif "联系人" in text:
+            mp = re.search(r"(1[3-9]\d{9})", text)
+            mr = re.search(r"(女儿|儿子|老伴|护工|邻居|社区|孙子|孙女|外孙)", text)
+            mn = re.search(r"(?:联系人|女儿|儿子|护工|邻居)\s*(?:是|叫)?\s*([\u4e00-\u9fa5]{2,3})", text)
+            up_slots = {
+                "field": "contacts",
+                "name": mn.group(1) if mn else "",
+                "relation": mr.group(1) if mr else "",
+                "phone": mp.group(1) if mp else "",
+            }
+        if up_slots is not None:
+            return _json.dumps(
+                {"intents": [{"name": "update_profile", "slots": up_slots}]},
+                ensure_ascii=False,
+            )
 
         today = date.today()
         date_iso = ""
@@ -149,7 +238,10 @@ class FakeLLMClient:
         confirm_kw = any(k in text for k in ["吃了", "吃过", "服了", "喝了", "吃完", "咽下"])
         defer_kw = any(k in text for k in ["待会", "等会", "一会儿", "过会", "稍后", "等下", "这就", "马上吃"])
         deny_kw = any(k in text for k in ["没吃", "还没", "忘了", "没顾上", "没有吃"])
-        if "药" in text and is_question:
+        schedule_kw = any(k in text for k in ["几点", "什么时候", "啥时候", "吃药时间", "时间表"])
+        if "药" in text and schedule_kw:
+            intents.append({"name": "query_medication", "slots": {"scope": "schedule"}})
+        elif "药" in text and is_question:
             intents.append({"name": "query_medication", "slots": {"scope": "today"}})
         elif confirm_kw and "药" in text:
             intents.append({"name": "confirm_medication", "slots": {}})
@@ -193,12 +285,6 @@ class FakeLLMClient:
 
         return _json.dumps({"intents": intents}, ensure_ascii=False)
 
-    def chat_with_tools(
-        self, messages: list[dict], tools: list[dict]
-    ) -> ChatResponse:
-        # FakeLLM 不触发工具，直接走普通回复
-        return ChatResponse(content=self.chat(messages), tool_calls=[])
-
 
 # ──────────────────────────────────────────────
 # 真实客户端（OpenAI / DeepSeek 兼容协议）
@@ -224,30 +310,19 @@ class OpenAICompatibleClient:
         )
         return (resp.choices[0].message.content or "").strip()
 
-    def chat_with_tools(
-        self, messages: list[dict], tools: list[dict]
-    ) -> ChatResponse:
-        resp = self._client.chat.completions.create(
+    def stream_chat(self, messages: list[dict]):
+        """流式生成：逐 token yield str。供面向用户的回复使用。"""
+        stream = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
-            tools=tools,
-            tool_choice="auto",   # LLM 自己决定要不要调
             temperature=0.7,
             max_tokens=300,
+            stream=True,
         )
-        msg = resp.choices[0].message
-        tool_calls = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append(ToolCall(
-                    call_id=tc.id,
-                    name=tc.function.name,
-                    arguments=tc.function.arguments or "{}",
-                ))
-        return ChatResponse(
-            content=(msg.content or "").strip(),
-            tool_calls=tool_calls,
-        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
 
 
 # ──────────────────────────────────────────────

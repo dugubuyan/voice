@@ -143,37 +143,3 @@ def test_unknown_tool_returns_error(session, elders):
     elder = elders["李桂芳"]
     result = execute_tool("nonexistent_tool", "{}", session, elder.id)
     assert "未知工具" in result
-
-
-# ──────────────────────────────────────────────
-# tool schema 完整性检查
-# ──────────────────────────────────────────────
-
-def test_tool_schemas_valid():
-    from app.agent.tools import TOOL_SCHEMAS
-
-    assert len(TOOL_SCHEMAS) == 3
-    names = {t["function"]["name"] for t in TOOL_SCHEMAS}
-    assert "query_health_records" in names
-    assert "query_medication_history" in names
-    assert "query_emergency_history" in names
-    for t in TOOL_SCHEMAS:
-        assert "description" in t["function"]
-        assert "parameters" in t["function"]
-
-
-# ──────────────────────────────────────────────
-# FakeLLM 不触发工具调用（测试隔离）
-# ──────────────────────────────────────────────
-
-def test_fake_llm_no_tool_calls():
-    from app.agent.llm import FakeLLMClient
-    from app.agent.tools import TOOL_SCHEMAS
-
-    llm = FakeLLMClient()
-    resp = llm.chat_with_tools(
-        [{"role": "user", "content": "我最近血压怎么样？"}],
-        TOOL_SCHEMAS,
-    )
-    assert not resp.has_tool_calls
-    assert resp.content

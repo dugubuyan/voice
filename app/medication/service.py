@@ -35,6 +35,37 @@ class MedicationService:
         self._session = session
         self._notifier = notifier
 
+    # ---- 用药计划录入（设置模式经此写入，不改动确认/防重复等安全判定）----
+    def create_plan(
+        self,
+        elder_id: int,
+        *,
+        name: str,
+        dose: str,
+        times: list[str] | None = None,
+        timing: str = "anytime",
+        color_or_shape: str = "",
+        notes: str = "",
+    ) -> Medication:
+        """新增一条用药计划（结构化数据录入）。
+
+        仅创建 Medication 计划行；服药确认、防重复服用、漏服升级等既有安全逻辑
+        完全不变（那些走 MedicationLog，不受本方法影响）。剂量/时间来自结构化录入，
+        绝不由 LLM 生成。
+        """
+        med = Medication(
+            elder_id=elder_id,
+            name=name,
+            dose=dose,
+            times=list(times or []),
+            timing=timing or "anytime",
+            color_or_shape=color_or_shape,
+            notes=notes,
+        )
+        self._session.add(med)
+        self._session.flush()
+        return med
+
     # ---- 查询 ----
     def _med(self, medication_id: int) -> Medication:
         return self._session.get(Medication, medication_id)

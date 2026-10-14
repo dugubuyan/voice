@@ -31,11 +31,40 @@ def get_engine():
 
 
 def init_db() -> None:
-    """建表。"""
+    """建表 + 轻量列迁移（SQLite）。"""
     # 确保模型已注册到 Base.metadata
     from app import models  # noqa: F401
 
     Base.metadata.create_all(_engine)
+    _ensure_sqlite_columns()
+
+
+# 既有库上补齐后加的列（SQLite 支持带默认值的 ADD COLUMN；已存在则跳过）。
+# 保数据、幂等：每次启动检查一次，缺列才加。
+_SQLITE_ADD_COLUMNS = {
+    "elders": {
+        "address": "ALTER TABLE elders ADD COLUMN address VARCHAR(256) DEFAULT ''",
+        "allergies": "ALTER TABLE elders ADD COLUMN allergies JSON DEFAULT '[]'",
+    },
+}
+
+
+def _ensure_sqlite_columns() -> None:
+    if not config.database_url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+
+    with _engine.begin() as conn:
+        for table, columns in _SQLITE_ADD_COLUMNS.items():
+            existing = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({table})"))
+            }
+            if not existing:
+                continue  # 表还不存在（create_all 之后一般已建）；跳过
+            for col, ddl in columns.items():
+                if col not in existing:
+                    conn.execute(text(ddl))
 
 
 @contextmanager

@@ -19,6 +19,8 @@ SEED = [
             dialect="普通话",
             preferences={"爱好": "养花、听越剧", "牵挂": "外孙小宝在上海读大学", "口味": "爱吃甜, 需控糖"},
             notes="独居，女儿每周探望一次。听力略下降，说话需慢些。",
+            address="上海市浦东新区滨江大道4600号",
+            allergies=["青霉素"],
         ),
         "meds": [
             dict(name="氨氯地平", dose="1片", times=["08:00"], timing="after_meal", color_or_shape="白色小圆片", notes="降压药"),

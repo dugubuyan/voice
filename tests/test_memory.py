@@ -113,3 +113,25 @@ def test_cross_session_summary_roundtrip(brain, started, session):
         brain._llm.chat = original_chat
     injected = "".join(m["content"] for m in captured["messages"] if m["role"] == "system")
     assert runtime2.running_summary in injected
+
+
+# ===== 任务5：档案上下文增强（用药时间兜底）=====
+
+def test_profile_context_medication_with_time_and_timing(session, elders):
+    """李桂芳用药行应含时间点（08:00）和饭前后（饭后）。"""
+    repo = ProfileRepository(session)
+    elder = elders["李桂芳"]
+    ctx = repo.build_context(elder)
+    assert "08:00" in ctx, f"应含时间点 08:00，实际：{ctx}"
+    assert "饭后" in ctx, f"应含饭后，实际：{ctx}"
+
+
+def test_profile_context_no_medication_shows_wu(session):
+    """无药老人用药行应显示"无"。"""
+    from app.models import Elder
+    elder = Elder(name="测试无药老人", age=70, conditions=[], emergency_contacts=[])
+    session.add(elder)
+    session.flush()
+    repo = ProfileRepository(session)
+    ctx = repo.build_context(elder)
+    assert "常用药物：无" in ctx, f"应含'常用药物：无'，实际：{ctx}"

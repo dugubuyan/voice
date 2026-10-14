@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from app.agent.llm import LLMClient
 from app.agent.nlu import Intent, build_nlu_prompt, parse_nlu_response
 from app.agent.prompts import SUMMARY_PROMPT, build_system_prompt
-from app.agent.runtime import ElderRuntime, Turn
+from app.agent.profile_slots import SLOT_REGISTRY, SlotApplyContext, resolve_field
+from app.agent.runtime import ElderRuntime, PendingSlot, Turn
 from app.agent.timectx import build_time_context
 from app.appointment.service import AppointmentService
 from app.config import config
@@ -27,14 +28,17 @@ from app.emergency.detector import Level
 from app.emergency.service import EmergencyService
 from app.medication.service import MedicationService
 from app.agent.reflection import ReflectionEngine
+from app.agent.triggers import TriggerEngine, build_default_triggers
 from app.memory.conflict import MemoryConflictResolver
 from app.memory.conversation import ConversationMemory
 from app.memory.events import EventStore, parse_health
 from app.memory.folder import SummaryFolder
 from app.memory.notes import NoteStore, ExtractedNote, date_status_label
 from app.memory.profile import ProfileRepository
+from app.memory.recall import FtsRecaller
+from app.memory.recent import RecentTurnLog
 from app.memory.running import RunningSummaryRepo
-from app.memory.working import WorkingMemory
+from app.memory.working import WorkingMemory, estimate_tokens
 from app.models import Elder
 from app.notify.notifier import Notifier
 _HEALTH_KINDS_CN = {
@@ -45,6 +49,22 @@ _HEALTH_KINDS_CN = {
     "weight": "体重",
 }
 
+# 档案复述确认的 yes/no 解读（与紧急确认无关，独立于 distress 词表）
+_YES_WORDS = ["对", "是", "嗯", "好的", "没错", "正确", "就是", "行", "可以", "确认"]
+_NO_WORDS = ["不对", "不是", "错了", "不", "重来", "改一下", "换", "不行"]
+
+
+def _interpret_yes_no(text: str) -> str:
+    """解读复述确认回复：'yes' / 'no' / 'unclear'。否定词优先，避免'不对'被'对'误判。"""
+    t = (text or "").strip()
+    if not t:
+        return "unclear"
+    if any(w in t for w in _NO_WORDS):
+        return "no"
+    if any(w in t for w in _YES_WORDS):
+        return "yes"
+    return "unclear"
+
 
 @dataclass
 class TurnResult:
@@ -53,6 +73,12 @@ class TurnResult:
     level: str | None = None
     actions: list[str] = field(default_factory=list)
     data: dict = field(default_factory=dict)
+    # 流式回复迭代器（仅 _handle_chat / _comfort 填充，其余为 None）。
+    # CLI 消费后 reply 已是完整文本；语音层直接接此迭代器做 TTS。
+    stream: object = None  # Iterator[str] | None
+
+
+
 
 
 class Brain:
@@ -73,6 +99,14 @@ class Brain:
         self._conflict = MemoryConflictResolver(session)
         self._reflection = ReflectionEngine(llm, self._conflict)
         self._runtimes: dict[int, ElderRuntime] = {}  # elder_id -> ElderRuntime
+        # ---- Phase 3：近期原文落盘 / 检索式回忆 / 统一条件触发 ----
+        self._recent = RecentTurnLog(session)
+        self._recaller = FtsRecaller(session)
+        # 循环依赖：TriggerEngine 需要 brain（读 _runtimes / iter_runtimes），
+        # brain 又持有 engine。此处 brain 其它字段已就绪，把 self 传入即可。
+        self._triggers = TriggerEngine(
+            session, self, build_default_triggers(session, llm, brain=self)
+        )
 
     # ---- 惰性运行态获取 ----
     def get_runtime(self, elder_id: int) -> ElderRuntime:
@@ -96,17 +130,47 @@ class Brain:
             system_prompt=system_prompt,
             running_summary=running_summary,
         )
+        # 重启恢复近期窗口（需求 8.2）：从 RecentTurn 落盘按时间恢复最近若干轮，
+        # 并用 estimate_tokens 累加窗口 token。best-effort——恢复失败绝不阻断对话。
+        try:
+            recovered = self._recent.load_recent(elder_id, limit=config.fold_batch * 4)
+            if recovered:
+                runtime.window.extend(recovered)
+                runtime.window_tokens += sum(
+                    estimate_tokens(t.content) for t in recovered
+                )
+                runtime.last_activity_at = recovered[-1].at
+        except Exception:
+            pass
         self._runtimes[elder_id] = runtime
         return runtime
 
     def iter_runtimes(self):
         return list(self._runtimes.values())
 
+    # ---- 低频被动脉冲：转发到 TriggerEngine（宿主主循环 / CLI /tick / 测试注入 now）----
+    def on_pulse(self, now: datetime) -> None:
+        """低频脉冲驱动记忆类触发（巩固/前瞻过期/清理/主动关心）。
+
+        失败隔离：引擎内部已隔离单个 trigger 异常，这里再兜一层，
+        保证脉冲永不外抛影响宿主循环。
+        """
+        try:
+            self._triggers.on_pulse(now)
+        except Exception:
+            pass
+
     def _elder(self, elder_id: int) -> Elder:
         return self._profiles.get(elder_id)
 
     # ---- 主入口 ----
-    def process_turn(self, elder_id: int, user_text: str) -> TurnResult:
+    def process_turn(self, elder_id: int, user_text: str, on_token=None) -> TurnResult:
+        """处理一轮对话。
+
+        on_token: Callable[[str], None] | None
+            流式回调，仅对 chat（闲聊）路径有效；每收到一个 LLM token 即调用。
+            CLI 传入打印函数以实现逐字显示；None 则静默收集（默认，兼容旧调用）。
+        """
         runtime = self.get_runtime(elder_id)
         elder = self._elder(elder_id)
 
@@ -127,6 +191,7 @@ class Brain:
             # 追加用户轮次
             user_turn = Turn("user", user_text, now)
             self._wm.append(runtime, user_turn)
+            self._recent.append(elder_id, user_turn)  # 落盘 best-effort（需求 8.3）
             runtime.last_activity_at = now
 
             # ---- 安全语义不变（顺序严格保持） ----
@@ -137,18 +202,34 @@ class Brain:
                 if decision.is_incident:
                     result = self._handle_emergency(runtime, elder, user_text, decision)
                 else:
-                    intents = self._run_nlu(elder, user_text)
-                    result = self._route(runtime, elder, user_text, intents)
+                    # 设置会话超时：到时先回 daily（最小权限），再处理本轮（安全语义之后）
+                    self._expire_setup_if_idle(runtime, now)
+                    if runtime.pending_profile_slot is not None:
+                        # 复述确认挂起中：本轮解读确认/否认/修正（仿紧急确认状态机）
+                        runtime.setup_last_at = now
+                        result = self._handle_profile_confirmation(runtime, elder, user_text)
+                    else:
+                        intents = self._run_nlu(elder, user_text)
+                        result = self._route(runtime, elder, user_text, intents, on_token=on_token)
 
             # 追加 assistant 轮次
             assistant_turn = Turn("assistant", result.reply, datetime.now())
             self._wm.append(runtime, assistant_turn)
+            self._recent.append(elder_id, assistant_turn)  # 落盘 best-effort（需求 8.3）
 
             # 超预算则增量折叠（唯一硬触发）
             self._wm.fold_if_over_budget(runtime, self._session)
 
             # 重要性反思：累积分数，超阈值时触发一次洞察
             self._reflection.observe(runtime, user_text, result.kind, self._session)
+
+        # reply 已产出、锁已释放后再跑记忆类触发（语义边界/抽取/巩固/清理等），
+        # 避免持锁做重活拖慢对话。引擎内部已做失败隔离，这里再兜一层，
+        # 保证触发器异常绝不影响 process_turn 的返回（需求 12 / P10）。
+        try:
+            self._triggers.on_turn(elder_id)
+        except Exception:
+            pass
 
         return result
 
@@ -160,7 +241,8 @@ class Brain:
         return parse_nlu_response(raw)
 
     def _route(
-        self, runtime: ElderRuntime, elder: Elder, text: str, intents: list[Intent]
+        self, runtime: ElderRuntime, elder: Elder, text: str, intents: list[Intent],
+        on_token=None,
     ) -> TurnResult:
         """把意图路由到确定性处理函数。工具即工程内的普通方法。"""
         dispatch = {
@@ -174,12 +256,24 @@ class Brain:
             "query_health": self._do_query_health,
             "query_appointment": self._do_query_appointment,
             "query_emergency": self._do_query_emergency,
+            # 模式控制在两个模式下都可用（进入需口令校验）
+            "enter_setup": self._do_enter_setup,
+            "exit_setup": self._do_exit_setup,
         }
+        # 能力过滤：写档案意图仅在设置模式开放（需求 1.2/1.3）
+        if runtime.mode == "setup":
+            dispatch["update_profile"] = self._do_update_profile
 
         # 纯闲聊（或未识别）→ 走 LLM 对话
         structured = [i for i in intents if i.name in dispatch]
         if not structured:
-            return self._handle_chat(runtime)
+            # 日常模式下想改档案：温和提示需先进设置模式，绝不静默写入
+            if runtime.mode != "setup" and any(i.name == "update_profile" for i in intents):
+                return TurnResult(
+                    reply="要修改资料得先进入设置模式哦。您可以说“进入设置模式”，再把口令告诉我。",
+                    kind="mode", data={"mode": runtime.mode},
+                )
+            return self._handle_chat(runtime, on_token=on_token)
 
         # 执行所有结构化意图（写操作 + 查询），收集片段
         fragments: list[TurnResult] = []
@@ -298,7 +392,7 @@ class Brain:
         messages.extend(t.to_llm_message() for t in runtime.window[-6:])
         messages.append({"role": "user", "content": directive})
         try:
-            reply = self._llm.chat(messages)
+            reply = "".join(self._llm.stream_chat(messages))
             return reply.strip() or fallback
         except Exception:
             return fallback
@@ -375,6 +469,12 @@ class Brain:
 
     def _do_query_medication(self, runtime, elder, text, slots) -> TurnResult:
         scope = slots.get("scope", "today")
+        if scope == "schedule":
+            from app.agent.tools import execute_tool
+            result = execute_tool(
+                "query_medication_schedule", "{}", self._session, elder.id
+            )
+            return TurnResult(reply=result, kind="medication", data={"answer": "schedule"})
         if scope == "history":
             from app.agent.tools import execute_tool
             days = int(slots.get("days", 3))
@@ -504,15 +604,154 @@ class Brain:
                               self._session, elder.id)
         return TurnResult(reply=result, kind="query", data={"query": "emergency"})
 
-    # ---- 日常对话（LLM）----
-    def _handle_chat(self, runtime: ElderRuntime) -> TurnResult:
-        """纯闲聊：LLM 带记忆上下文与防编造约束，不做工具调用。"""
+    # ══════════════════════════════════════════════
+    # 设置模式：模式控制 + 槽位填充 + 复述确认（profile-setup-mode）
+    # 安全语义之后运行；紧急待确认时不会进入（见 process_turn）。
+    # ══════════════════════════════════════════════
+
+    def _expire_setup_if_idle(self, runtime: ElderRuntime, now: datetime) -> None:
+        """设置会话超时：闲置超阈值则回 daily，丢弃未确认槽位（P7 / 需求 3.2/3.3）。"""
+        if runtime.mode != "setup" or runtime.setup_last_at is None:
+            return
+        if (now - runtime.setup_last_at).total_seconds() >= config.setup_session_timeout_sec:
+            runtime.mode = "daily"
+            runtime.pending_profile_slot = None
+            runtime.setup_last_at = None
+
+    def _do_enter_setup(self, runtime, elder, text, slots) -> TurnResult:
+        """进入设置模式：口令校验（占位口令，来自 config）。不回显口令明文。"""
+        passcode = str(slots.get("passcode", "")).strip()
+        if not passcode or passcode != config.setup_passcode:
+            return TurnResult(
+                reply="进入设置需要正确的口令哦，您把口令告诉我就行。",
+                kind="mode", data={"mode": runtime.mode, "entered": False},
+            )
+        runtime.mode = "setup"
+        runtime.setup_last_at = datetime.now()
+        return TurnResult(
+            reply="已进入设置模式。您可以告诉我要修改的资料，比如住址、过敏史、紧急联系人或用药。说“退出设置”就回到平常聊天。",
+            kind="mode", data={"mode": "setup", "entered": True},
+        )
+
+    def _do_exit_setup(self, runtime, elder, text, slots) -> TurnResult:
+        """退出设置模式，回到日常陪护；丢弃未确认槽位。"""
+        runtime.mode = "daily"
+        runtime.pending_profile_slot = None
+        runtime.setup_last_at = None
+        return TurnResult(
+            reply="好的，已退回日常陪护。您有什么想聊的都可以跟我说。",
+            kind="mode", data={"mode": "daily"},
+        )
+
+    def _do_update_profile(self, runtime, elder, text, slots) -> TurnResult:
+        """设置模式写档案：解析候选 → 校验 → 复述确认（不落库，需求 4.2）。"""
+        runtime.setup_last_at = datetime.now()
+        field = resolve_field(slots.get("field", ""))
+        if field is None:
+            return TurnResult(
+                reply="您想设置哪一项呢？住址、过敏史、慢性病、紧急联系人，还是用药？",
+                kind="profile",
+            )
+        spec = SLOT_REGISTRY[field]
+        value = spec.parse(slots, text)
+        if value is None:
+            return TurnResult(reply=f"好的，我们来设置{spec.label}。您具体说说？", kind="profile")
+        ok, err = spec.validate(value)
+        if not ok:
+            return TurnResult(reply=err, kind="profile", data={"field": field, "need_more": True})
+        runtime.pending_profile_slot = PendingSlot(field, value, spec.display(value))
+        return TurnResult(
+            reply=f"您是说{spec.label}是「{spec.display(value)}」，对吗？对的话我就记下了。",
+            kind="profile", data={"field": field, "pending": True},
+        )
+
+    def _handle_profile_confirmation(self, runtime, elder, text) -> TurnResult:
+        """复述确认解读：确认→落库；否认→重采；修正值→以新值再确认（需求 4.3/4.4）。"""
+        pend = runtime.pending_profile_slot
+        spec = SLOT_REGISTRY[pend.field]
+        t = (text or "").strip()
+
+        # 退出设置优先于确认：挂起中说退出 → 丢弃未确认槽位并回 daily（需求 3.3 / P7）
+        if any(k in t for k in ["退出设置", "设置好了", "设置完了", "完成设置", "结束设置", "不设置了", "退出"]):
+            return self._do_exit_setup(runtime, elder, text, {})
+        # 取消本条：丢弃当前槽位，但留在设置模式
+        if any(k in t for k in ["取消", "算了", "不改了", "不记了"]):
+            runtime.pending_profile_slot = None
+            return TurnResult(
+                reply=f"好的，那{spec.label}先不改了。还要设置别的吗？",
+                kind="profile", data={"field": spec.field, "pending": False},
+            )
+
+        verdict = _interpret_yes_no(text)
+
+        if verdict == "yes":
+            saved = self._apply_slot(elder, spec, pend.value)
+            display = pend.display
+            runtime.pending_profile_slot = None
+            if saved:
+                return TurnResult(
+                    reply=f"好的，{spec.label}我记好了：{display}。",
+                    kind="profile", data={"field": spec.field, "saved": True},
+                )
+            return TurnResult(
+                reply=f"哎呀，这条{spec.label}没能存上，麻烦您稍后再说一遍。",
+                kind="profile", data={"field": spec.field, "saved": False},
+            )
+
+        if verdict == "no":
+            runtime.pending_profile_slot = None
+            return TurnResult(
+                reply=f"好的，那{spec.label}我们重新来，您再说一遍。",
+                kind="profile", data={"field": spec.field, "pending": False},
+            )
+
+        # 不确定：可能是在给修正值，尝试按同字段重新解析
+        new_val = spec.parse({}, text)
+        if new_val is not None:
+            ok, _ = spec.validate(new_val)
+            if ok:
+                runtime.pending_profile_slot = PendingSlot(pend.field, new_val, spec.display(new_val))
+                return TurnResult(
+                    reply=f"那{spec.label}是「{spec.display(new_val)}」，对吗？",
+                    kind="profile", data={"field": spec.field, "pending": True},
+                )
+        return TurnResult(
+            reply=f"您是说{spec.label}是「{pend.display}」吗？对的话说“对”，不对就再说一遍。",
+            kind="profile", data={"field": spec.field, "pending": True},
+        )
+
+    def _apply_slot(self, elder, spec, value) -> bool:
+        """确定性 setter 落库；写成功（flush 无异常）才算合同成立（C1）。"""
+        try:
+            ctx = SlotApplyContext(session=self._session, medication=self._medication)
+            spec.apply(ctx, elder, value)
+            self._session.flush()
+            return True
+        except Exception:
+            try:
+                self._session.rollback()
+            except Exception:
+                pass
+            return False
+
+    # ---- 闲聊上下文组装（_handle_chat 使用）----
+    def _build_chat_messages(self, runtime: ElderRuntime) -> list[dict]:
+        """组装闲聊上下文：档案+召回+回顾+时间+窗口。"""
         tctx = build_time_context(
             datetime.now(),
             runtime.window[-2].at if len(runtime.window) >= 2 else None,
         )
         messages: list[dict] = [{"role": "system", "content": runtime.system_prompt}]
-        # 动态注入最新 running summary（随折叠增长，不可烘焙进 system_prompt）
+        try:
+            query = runtime.window[-1].content if runtime.window else ""
+            recall_result = self._recaller.recall(
+                runtime.elder_id, query, datetime.now()
+            )
+            injection = recall_result.to_injection()
+            if injection:
+                messages.append({"role": "system", "content": injection})
+        except Exception:
+            pass
         if runtime.running_summary:
             messages.append({
                 "role": "system",
@@ -523,7 +762,25 @@ class Brain:
             })
         messages.append({"role": "system", "content": tctx.to_injection()})
         messages.extend(t.to_llm_message() for t in runtime.window)
-        reply = self._llm.chat(messages)
+        return messages
+
+    # ---- 日常对话（LLM）----
+    def _handle_chat(
+        self,
+        runtime: ElderRuntime,
+        on_token=None,   # Callable[[str], None] | None，每个 token 到达时调用
+    ) -> TurnResult:
+        """纯闲聊：LLM 流式，边收 token 边调 on_token 回调（供 CLI 逐字打印）。
+
+        reply 收集完整文本；on_token=None 时静默收集。
+        """
+        messages = self._build_chat_messages(runtime)
+        buf: list[str] = []
+        for tok in self._llm.stream_chat(messages):
+            buf.append(tok)
+            if on_token is not None:
+                on_token(tok)
+        reply = "".join(buf)
         return TurnResult(reply=reply, kind="chat")
 
     # ---- 预约上下文（供 get_runtime 注入）----

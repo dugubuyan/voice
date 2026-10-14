@@ -106,3 +106,57 @@ def test_appointment_expired_not_in_upcoming(session, elders):
     titles = [a.title for a in upcoming]
     assert "将来的事" in titles
     assert "过期的事" not in titles
+
+
+# ──────────────────────────────────────────────
+# schedule facet 识别（任务 3）
+# ──────────────────────────────────────────────
+
+def _nlu(brain, elder, text):
+    """调用 NLU 层，返回第一个意图。"""
+    intents = brain._run_nlu(elder, text)
+    return intents[0]
+
+
+def test_nlu_schedule_jidie(brain, started, elders):
+    """'我几点吃药' → query_medication + scope=schedule"""
+    elder_id, _ = started("李桂芳")
+    elder = elders["李桂芳"]
+    intent = _nlu(brain, elder, "我几点吃药")
+    assert intent.name == "query_medication"
+    assert intent.slots.get("scope") == "schedule"
+
+
+def test_nlu_schedule_yiban_jidie(brain, started, elders):
+    """'我一般几点吃药' → query_medication + scope=schedule"""
+    elder_id, _ = started("李桂芳")
+    elder = elders["李桂芳"]
+    intent = _nlu(brain, elder, "我一般几点吃药")
+    assert intent.name == "query_medication"
+    assert intent.slots.get("scope") == "schedule"
+
+
+def test_nlu_schedule_shenmeshihou(brain, started, elders):
+    """'我的吃药时间是什么时候' → query_medication + scope=schedule"""
+    elder_id, _ = started("李桂芳")
+    elder = elders["李桂芳"]
+    intent = _nlu(brain, elder, "我的吃药时间是什么时候")
+    assert intent.name == "query_medication"
+    assert intent.slots.get("scope") == "schedule"
+
+
+def test_nlu_regression_today(brain, started, elders):
+    """回归：'我吃药了吗' 仍为 scope=today"""
+    elder_id, _ = started("李桂芳")
+    elder = elders["李桂芳"]
+    intent = _nlu(brain, elder, "我吃药了吗")
+    assert intent.name == "query_medication"
+    assert intent.slots.get("scope") == "today"
+
+
+def test_nlu_regression_confirm(brain, started, elders):
+    """回归：'药吃过了' 仍为 confirm_medication"""
+    elder_id, _ = started("李桂芳")
+    elder = elders["李桂芳"]
+    intent = _nlu(brain, elder, "药吃过了")
+    assert intent.name == "confirm_medication"
