@@ -1,7 +1,7 @@
 """网页演示服务（FastAPI）。
 
-本地：  python -m demo.server            -> http://127.0.0.1:8000
-部署：  uvicorn demo.server:app --host 0.0.0.0 --port 8000   （在仓库根目录执行）
+启动：  python -m demo.server            -> 监听 0.0.0.0:8080（HOST / PORT 可改）
+等价：  uvicorn demo.server:app --host 0.0.0.0 --port 8080   （在仓库根目录执行）
 
 环境变量（均可选）：
   DEMO_ACCESS_CODE      设置后整站启用 HTTP Basic 认证（用户名任意，密码=该值）。
@@ -181,8 +181,13 @@ app.include_router(router)
 if __name__ == "__main__":
     import uvicorn
 
+    if not _ACCESS_CODE and not isinstance(_llm, FakeLLMClient):
+        print(
+            "[warn] 已接入真实 LLM 且未设置 DEMO_ACCESS_CODE：任何能访问该端口的人"
+            "都能消耗你的 LLM 额度。建议：DEMO_ACCESS_CODE=<口令> python -m demo.server"
+        )
     uvicorn.run(
         app,
-        host=os.getenv("HOST", "127.0.0.1"),
-        port=int(os.getenv("PORT", "8000")),
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8080")),
     )

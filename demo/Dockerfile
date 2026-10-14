@@ -1,5 +1,5 @@
 # 在仓库根目录构建：docker build -f demo/Dockerfile -t eldercare-demo .
-# 运行：docker run -p 8000:8000 -e DEMO_ACCESS_CODE=xxx -e DEEPSEEK_API_KEY=xxx eldercare-demo
+# 运行：docker run -p 8080:8080 -e DEMO_ACCESS_CODE=xxx -e DEEPSEEK_API_KEY=xxx eldercare-demo
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
@@ -17,5 +17,5 @@ COPY demo ./demo
 RUN useradd --no-create-home --uid 10001 app
 USER app
 
-EXPOSE 8000
-CMD ["sh", "-c", "uvicorn demo.server:app --host 0.0.0.0 --port ${PORT:-8000}"]
+EXPOSE 8080
+CMD ["sh", "-c", "uvicorn demo.server:app --host 0.0.0.0 --port ${PORT:-8080}"]

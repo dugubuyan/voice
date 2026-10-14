@@ -7,7 +7,7 @@
 
 ```bash
 pip install -r requirements.txt -r demo/requirements.txt
-python -m demo.server            # http://127.0.0.1:8000
+python -m demo.server            # 监听 0.0.0.0:8080，本机打开 http://localhost:8080
 ```
 
 未配置 LLM key 时自动使用离线模板回复，页面顶部会标明。
@@ -16,13 +16,13 @@ python -m demo.server            # http://127.0.0.1:8000
 
 ```bash
 docker build -f demo/Dockerfile -t eldercare-demo .
-docker run -p 8000:8000 \
+docker run -p 8080:8080 \
   -e DEMO_ACCESS_CODE=<访问口令> \
   -e LLM_PROVIDER=deepseek -e DEEPSEEK_API_KEY=<key> \
   eldercare-demo
 ```
 
-不用 Docker：在仓库根目录执行 `uvicorn demo.server:app --host 0.0.0.0 --port 8000`。
+不用 Docker：在仓库根目录执行 `uvicorn demo.server:app --host 0.0.0.0 --port 8080`。
 健康检查路径：`/healthz`。放在 HTTPS 反向代理（Nginx / Caddy / 平台自带）后面。
 
 | 环境变量 | 默认 | 说明 |
