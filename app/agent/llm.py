@@ -300,6 +300,13 @@ class OpenAICompatibleClient:
             kwargs["base_url"] = base_url
         self._client = OpenAI(**kwargs)
         self._model = model
+        # 思考型模型的思考内容也占 max_tokens，思考过长会把 300 用光、正文为空。
+        # 对支持该开关的网关（DashScope）关闭思考；其它网关不发此字段，避免被拒绝。
+        self._extra: dict = (
+            {"extra_body": {"enable_thinking": False}}
+            if config.should_disable_thinking(base_url)
+            else {}
+        )
 
     def chat(self, messages: list[dict]) -> str:
         resp = self._client.chat.completions.create(
@@ -307,6 +314,7 @@ class OpenAICompatibleClient:
             messages=messages,
             temperature=0.7,
             max_tokens=300,
+            **self._extra,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -318,6 +326,7 @@ class OpenAICompatibleClient:
             temperature=0.7,
             max_tokens=300,
             stream=True,
+            **self._extra,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content

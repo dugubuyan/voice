@@ -775,12 +775,22 @@ class Brain:
         reply 收集完整文本；on_token=None 时静默收集。
         """
         messages = self._build_chat_messages(runtime)
-        buf: list[str] = []
-        for tok in self._llm.stream_chat(messages):
-            buf.append(tok)
+        reply = ""
+        # 模型偶发返回空正文：重试一次，仍为空则用兜底话术，
+        # 避免空回复被当成一轮助手发言写进对话窗口。
+        for _ in range(2):
+            buf: list[str] = []
+            for tok in self._llm.stream_chat(messages):
+                buf.append(tok)
+                if on_token is not None:
+                    on_token(tok)
+            reply = "".join(buf)
+            if reply.strip():
+                break
+        if not reply.strip():
+            reply = "嗯，我听着呢，您慢慢说。"
             if on_token is not None:
-                on_token(tok)
-        reply = "".join(buf)
+                on_token(reply)
         return TurnResult(reply=reply, kind="chat")
 
     # ---- 预约上下文（供 get_runtime 注入）----

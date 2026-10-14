@@ -72,6 +72,15 @@ class Config:
     setup_session_timeout_sec: int = int(os.getenv("SETUP_TIMEOUT_SEC", "300"))
 
 
+    # 关闭思考型模型的思考过程（请求体加 enable_thinking=false）。
+    # 空=自动（base_url 含 dashscope 时开启）；true/false 强制。
+    llm_disable_thinking: str = os.getenv("LLM_DISABLE_THINKING", "")
+
+    def should_disable_thinking(self, base_url: str | None) -> bool:
+        if self.llm_disable_thinking.strip():
+            return _bool(self.llm_disable_thinking)
+        return "dashscope" in (base_url or "").lower()
+
     def resolve_llm(self) -> tuple[str | None, str, str | None]:
         """按 provider 返回 (api_key, model, base_url)。"""
         if self.llm_provider.lower() == "deepseek":
