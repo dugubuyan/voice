@@ -37,6 +37,15 @@ class Config:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///elder_care.db")
     allow_fake_llm: bool = _bool(os.getenv("ALLOW_FAKE_LLM"), True)
 
+    # 联网搜索（火山联网搜索 API，非方舟 LLM 接口）。缺 key 或关闭时对话如实告知"查不了"。
+    volcano_api_key: str | None = os.getenv("VOLCANO_API_KEY")
+    volcano_search_url: str = os.getenv(
+        "VOLCANO_SEARCH_URL", "https://open.feedcoopapi.com/search_api/web_search"
+    )
+    web_search_enabled: bool = _bool(os.getenv("WEB_SEARCH_ENABLED"), True)
+    web_search_timeout_sec: float = float(os.getenv("WEB_SEARCH_TIMEOUT_SEC", "8"))
+    web_search_count: int = int(os.getenv("WEB_SEARCH_COUNT", "3"))
+
     # 用药提醒未确认时的重复提醒次数与间隔（分钟）
     medication_max_reminders: int = int(os.getenv("MED_MAX_REMINDERS", "3"))
     medication_retry_minutes: int = int(os.getenv("MED_RETRY_MINUTES", "10"))
@@ -86,6 +95,10 @@ class Config:
         if self.llm_provider.lower() == "deepseek":
             return self.deepseek_api_key, self.deepseek_model, self.deepseek_base_url
         return self.openai_api_key, self.openai_model, self.openai_base_url
+
+    @property
+    def has_web_search(self) -> bool:
+        return self.web_search_enabled and bool(self.volcano_api_key)
 
     @property
     def has_real_llm(self) -> bool:

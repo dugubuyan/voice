@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>老人看护机器人 · 在线演示</title>
+<title>陪伴机器人</title>
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --line: #e2e5ea; --text: #1f2430; --muted: #5d6676;
@@ -11,25 +11,30 @@
     --warn: #b45309; --danger: #b42318; --ok: #1a7f4b;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+  body { margin: 0; font: 17px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 18px; margin: 0; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
   .badge { font-size: 13px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .badge.offline { color: var(--warn); border-color: var(--warn); }
   .badge.online { color: var(--ok); border-color: var(--ok); }
-  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
-  label { font-size: 14px; color: var(--muted); }
-  select, input[type=text], button { font: inherit; }
-  select, input[type=text] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
-  button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); cursor: pointer; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 4px; }
+  input, button { font: inherit; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
+  button { padding: 10px 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.link { border: 0; background: none; color: var(--accent); padding: 4px 8px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   :focus-visible { outline: 3px solid #9bbcff; outline-offset: 1px; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  #log { height: 440px; overflow-y: auto; margin: 12px 0; padding: 4px; display: flex; flex-direction: column; gap: 10px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 4px; }
+  .tabs button[aria-selected=true] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  #auth form { max-width: 380px; margin: 0 auto; }
+  #auth .submit { width: 100%; margin-top: 18px; }
+  .error { color: var(--danger); font-size: 14px; min-height: 1.4em; margin: 10px 0 0; }
+  .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  #log { height: 60vh; min-height: 320px; overflow-y: auto; margin: 4px 0 12px; padding: 4px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 85%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
   .msg.user { align-self: flex-end; background: var(--user); }
   .msg.bot { align-self: flex-start; background: var(--bot); }
@@ -37,56 +42,63 @@
   .tag { display: inline-block; font-size: 12px; padding: 0 8px; margin-top: 4px; border-radius: 999px; border: 1px solid currentColor; }
   .tag.emergency { color: var(--danger); } .tag.alert { color: var(--warn); } .tag.other { color: var(--muted); }
   #form { display: flex; gap: 8px; } #text { flex: 1; min-width: 0; }
-  .chips { margin-top: 10px; } .chips button { font-size: 14px; padding: 4px 10px; }
-  .group-title { font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
-  aside h2 { font-size: 15px; margin: 0 0 8px; }
-  details { border-top: 1px solid var(--line); padding: 8px 0; } details:first-of-type { border-top: 0; }
-  summary { cursor: pointer; font-weight: 600; }
-  ul.kv { margin: 6px 0 0; padding-left: 18px; font-size: 14px; } ul.kv li { margin: 2px 0; }
-  .muted { color: var(--muted); } .empty { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
-  .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
-  <h1>🤖 老人看护机器人 · 在线演示</h1>
-  <span id="llm" class="badge">加载中…</span>
-  <span id="quota" class="badge" aria-live="polite"></span>
-  <button id="restart" type="button">重新开始</button>
+  <h1>🤖 陪伴机器人</h1>
+  <span id="llm" class="badge" hidden></span>
+  <span id="who" class="badge" hidden></span>
+  <button id="logout" type="button" class="link" hidden>退出登录</button>
 </header>
 
 <main>
-  <section aria-label="对话">
-    <div class="row">
-      <label for="elder">陪护对象</label>
-      <select id="elder"></select>
-      <span id="mode" class="badge"></span>
+  <!-- 登录 / 注册 -->
+  <section id="auth" aria-label="登录或注册" hidden>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-login" aria-selected="true">登录</button>
+      <button type="button" role="tab" id="tab-register" aria-selected="false">注册</button>
     </div>
 
-    <div id="log" role="log" aria-live="polite" aria-label="对话记录"></div>
-
-    <form id="form" autocomplete="off">
-      <label class="sr-only" for="text">输入老人说的话</label>
-      <input id="text" type="text" maxlength="200" placeholder="输入老人说的话…" required>
-      <button id="send" class="primary" type="submit">发送</button>
+    <form id="login-form" autocomplete="on">
+      <label for="l-user">用户名</label>
+      <input id="l-user" name="username" autocomplete="username" maxlength="32" required>
+      <label for="l-pass">密码</label>
+      <input id="l-pass" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+      <button class="primary submit" type="submit">登录</button>
     </form>
 
-    <div class="group-title">模拟生活场景（随机来一句）</div>
-    <div class="chips row" id="chips"></div>
-
-    <div class="group-title">系统事件</div>
-    <div class="chips row">
-      <span id="remind-box" class="row"></span>
-      <button id="silence" type="button" title="紧急确认中老人一直没回应，系统会升级并通知家属">🔕 模拟老人沉默</button>
-      <button id="pulse" type="button" title="假装过了 1 小时：触发记忆巩固、前瞻过期等条件检查">⏩ 过 1 小时（记忆脉冲）</button>
-    </div>
-    <p class="hint">想试设置模式：说“进入设置模式，口令0000”，再说“我对海鲜过敏”，机器人复述后回答“对”即保存；说“退出设置”返回。数据只保存在本次演示中，关闭或过期后即清除。</p>
+    <form id="register-form" autocomplete="on" hidden>
+      <label for="r-user">用户名（3~32 位字母、数字、下划线）</label>
+      <input id="r-user" name="username" autocomplete="username" maxlength="32" required>
+      <label for="r-pass">密码（至少 8 位）</label>
+      <input id="r-pass" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>
+      <label for="r-name">机器人怎么称呼您</label>
+      <input id="r-name" name="name" maxlength="20" required>
+      <label for="r-age">年龄</label>
+      <input id="r-age" name="age" type="number" min="1" max="120" inputmode="numeric" required>
+      <div id="invite-box">
+        <label for="r-invite">邀请码（一次性，向管理员索取）</label>
+        <input id="r-invite" name="invite_code" autocomplete="off" maxlength="128">
+      </div>
+      <button class="primary submit" type="submit">注册并进入</button>
+      <p class="hint">每个账号拥有独立的对话历史和记忆，其他用户看不到。</p>
+    </form>
+    <p id="auth-error" class="error" role="alert"></p>
   </section>
 
-  <aside>
-    <section aria-label="系统状态" id="state"></section>
-  </aside>
+  <!-- 对话 -->
+  <section id="chat" aria-label="对话" hidden>
+    <div id="log" role="log" aria-live="polite" aria-label="对话记录"></div>
+    <form id="form" autocomplete="off">
+      <label class="sr-only" for="text">输入想说的话</label>
+      <input id="text" type="text" maxlength="200" placeholder="想聊点什么？" required>
+      <button id="send" class="primary" type="submit">发送</button>
+    </form>
+    <p class="hint">想修改住址、过敏史等资料：说“进入设置模式，口令……”，按提示操作；说“退出设置”返回。</p>
+  </section>
 </main>
 
 <script>
@@ -97,228 +109,190 @@ const el = (tag, props = {}, ...kids) => {
   return n;
 };
 
-let sid = null, elders = [], scenarios = {}, busy = false;
-const history = new Map();          // elder_id -> [{who, text, tag}]
-const curElder = () => elders.find((e) => e.id === Number($("#elder").value));
+let me = null, busy = false, oldestId = null, hasMore = false;
+const LEVEL = { observe: "关注", alert: "告警", emergency: "紧急" };
 
 async function api(method, path, body) {
   const r = await fetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
+    credentials: "same-origin",
   });
   if (!r.ok) {
     let msg = r.statusText;
-    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : msg; } catch (_) {}
+    try {
+      const j = await r.json();
+      if (typeof j.detail === "string") msg = j.detail;
+      else if (Array.isArray(j.detail)) msg = "输入内容不符合要求，请检查后重试";
+    } catch (_) {}
     throw Object.assign(new Error(msg), { status: r.status });
   }
   return r.status === 204 ? null : r.json();
 }
 
-// ---------- 对话渲染 ----------
-function pushMsg(who, text, tag) {
-  const id = curElder().id;
-  if (!history.has(id)) history.set(id, []);
-  history.get(id).push({ who, text, tag });
-  renderLog();
+// ---------- 视图切换 ----------
+function showAuth(msg = "") {
+  me = null;
+  $("#auth").hidden = false; $("#chat").hidden = true;
+  $("#who").hidden = true; $("#logout").hidden = true; $("#llm").hidden = true;
+  $("#auth-error").textContent = msg;
+  $("#log").replaceChildren();
 }
-function renderLog() {
+function showChat(info) {
+  me = info;
+  $("#auth").hidden = true; $("#chat").hidden = false;
+  $("#who").textContent = info.name; $("#who").hidden = false;
+  $("#logout").hidden = false;
+  $("#llm").hidden = false;
+  $("#llm").textContent = info.llm === "online" ? "真实 LLM 对话" : "离线模板回复（未接入 LLM）";
+  $("#llm").className = "badge " + (info.llm === "online" ? "online" : "offline");
+  $("#text").maxLength = info.max_text;
+  return loadHistory();
+}
+function selectTab(which) {
+  const login = which === "login";
+  $("#login-form").hidden = !login; $("#register-form").hidden = login;
+  $("#tab-login").setAttribute("aria-selected", login);
+  $("#tab-register").setAttribute("aria-selected", !login);
+  $("#auth-error").textContent = "";
+}
+
+// ---------- 对话渲染 ----------
+function tagFor(level, actions) {
+  const parts = [];
+  if (level) parts.push(LEVEL[level] || level);
+  if (actions && actions.length) parts.push(actions.join("；"));
+  if (!parts.length) return null;
+  return { cls: level === "emergency" ? "emergency" : level === "alert" ? "alert" : "other", text: parts.join(" · ") };
+}
+function bubble(who, text, tag, at) {
+  const box = el("div", { className: `msg ${who}` }, text);
+  if (at) box.title = at;
+  if (tag) box.append(el("br"), el("span", { className: `tag ${tag.cls}`, textContent: tag.text }));
+  return box;
+}
+function scrollEnd() { const l = $("#log"); l.scrollTop = l.scrollHeight; }
+
+async function loadHistory() {
   const log = $("#log");
   log.replaceChildren();
-  for (const m of history.get(curElder().id) || []) {
-    const box = el("div", { className: `msg ${m.who}` }, m.text);
-    if (m.tag) box.append(el("br"), el("span", { className: `tag ${m.tag.cls}`, textContent: m.tag.text }));
-    log.append(box);
+  const r = await api("GET", "/api/history?limit=50");
+  if (!r.messages.length) {
+    log.append(bubble("bot", `${me.name}，我在呢。今天感觉怎么样呀？`));
+  } else {
+    appendHistory(r.messages, false);
+    hasMore = r.messages.length === 50;
+    addMoreButton();
   }
-  log.scrollTop = log.scrollHeight;
+  scrollEnd();
+  $("#text").focus();
 }
-const LEVEL = { observe: "关注", alert: "告警", emergency: "紧急" };
-function tagFor(r) {
-  const parts = [];
-  if (r.level) parts.push(LEVEL[r.level] || r.level);
-  if (r.actions && r.actions.length) parts.push(r.actions.join("；"));
-  if (!parts.length) return null;
-  return { cls: r.level === "emergency" ? "emergency" : r.level === "alert" ? "alert" : "other", text: parts.join(" · ") };
+function appendHistory(msgs, prepend) {
+  const nodes = msgs.map((m) =>
+    bubble(m.role === "user" ? "user" : "bot", m.text, m.role === "assistant" ? tagFor(m.level, null) : null, m.at));
+  oldestId = msgs[0].id;
+  const log = $("#log");
+  if (prepend) {
+    const before = log.scrollHeight;
+    log.prepend(...nodes);
+    log.scrollTop = log.scrollHeight - before;
+  } else {
+    log.append(...nodes);
+  }
+}
+function addMoreButton() {
+  $("#more")?.remove();
+  if (!hasMore) return;
+  const b = el("button", { id: "more", type: "button", className: "link", textContent: "查看更早的对话" });
+  b.addEventListener("click", async () => {
+    const r = await api("GET", `/api/history?limit=50&before=${oldestId}`);
+    hasMore = r.messages.length === 50;
+    if (r.messages.length) appendHistory(r.messages, true);
+    addMoreButton();
+  });
+  $("#log").prepend(b);
 }
 
-// ---------- 忙碌态 ----------
+// ---------- 发送 ----------
 function setBusy(b) {
   busy = b;
-  document.querySelectorAll("#form button, #chips button, #remind-box button, #silence, #pulse, #elder, #text")
-    .forEach((n) => (n.disabled = b));
+  $("#text").disabled = b; $("#send").disabled = b;
   if (!b) $("#text").focus();
 }
-async function run(fn) {
-  if (busy) return;
-  setBusy(true);
-  try {
-    await fn();
-  } catch (e) {
-    if (e.status === 404) {
-      pushMsg("sys", "演示会话已过期，已为你重新开始。");
-      await newSession();
-    } else {
-      pushMsg("sys", `出错了：${e.message}`);
-    }
-  } finally {
-    setBusy(false);
-  }
-}
-
-// ---------- 动作 ----------
 async function say(text) {
   text = text.trim();
-  if (!text) return;
-  pushMsg("user", text);
-  const typing = "……";
-  pushMsg("bot", typing);
-  const arr = history.get(curElder().id);
-  try {
-    const r = await api("POST", `/api/sessions/${sid}/chat`, { elder_id: curElder().id, text });
-    arr[arr.length - 1] = { who: "bot", text: r.reply, tag: tagFor(r) };
-  } catch (e) {
-    arr.pop();
-    throw e;
-  } finally {
-    renderLog();
-    await refresh();
-  }
-}
-async function remind(t) {
-  const r = await api("POST", `/api/sessions/${sid}/remind`, { elder_id: curElder().id, time: t });
-  if (!r.texts.length) pushMsg("sys", `（${t} 没有安排用药）`);
-  r.texts.forEach((x) => pushMsg("bot", x, { cls: "other", text: `用药提醒 ${t}` }));
-  await refresh();
-}
-async function silence() {
-  const r = await api("POST", `/api/sessions/${sid}/silence`, { elder_id: curElder().id });
-  if (r.reply) pushMsg("bot", r.reply, { cls: "emergency", text: "沉默升级 · 已通知家属" });
-  else pushMsg("sys", "（当前没有待确认的紧急情况。可先说“我这胸口有点闷”触发告警确认）");
-  await refresh();
-}
-async function pulse() {
-  await api("POST", `/api/sessions/${sid}/pulse`, { minutes: 60 });
-  pushMsg("sys", "（已模拟过了 1 小时，触发记忆巩固 / 前瞻过期等检查）");
-  await refresh();
-}
-
-// ---------- 状态面板 ----------
-function list(items, render, emptyText) {
-  if (!items.length) return el("p", { className: "empty", textContent: emptyText });
-  const ul = el("ul", { className: "kv" });
-  items.forEach((i) => ul.append(el("li", {}, render(i))));
-  return ul;
-}
-function section(title, open, ...kids) {
-  const d = el("details", {}, el("summary", { textContent: title }), ...kids);
-  d.open = open;
-  return d;
-}
-async function refresh() {
-  if (!sid) return;
-  let s;
-  try { s = await api("GET", `/api/sessions/${sid}/state?elder_id=${curElder().id}`); } catch (_) { return; }
-  const open = new Map([...document.querySelectorAll("#state details")].map((d) => [d.firstChild.textContent, d.open]));
-  const isOpen = (t, dflt) => (open.has(t) ? open.get(t) : dflt);
-
-  $("#mode").textContent = s.mode === "setup" ? "设置模式" : "日常陪护";
-  $("#mode").className = "badge" + (s.mode === "setup" ? " offline" : "");
-  $("#quota").textContent = `已用 ${s.turns_used}/${s.turns_max} 轮`;
-
-  const m = s.memory, e = s.events, p = s.profile;
-  const root = $("#state");
-  root.replaceChildren(
-    el("h2", { textContent: "📊 系统记住 / 检测到了什么" }),
-    section("🚨 紧急与家属通知", isOpen("🚨 紧急与家属通知", true),
-      list(e.emergencies, (x) => `${x.time} [${LEVEL[x.level] || x.level}] ${x.text}（${x.status}）`, "暂无紧急事件"),
-      list(e.notifications, (x) => `${x.time} → ${x.recipient}：${x.text}`, "暂无家属通知")),
-    section("🩺 健康记录", isOpen("🩺 健康记录", true),
-      list(e.health, (x) => `${x.time} ${x.text}`, "暂无。试试说“刚量了血压，148/90”")),
-    section("💊 今日用药", isOpen("💊 今日用药", true),
-      list(s.medications, (x) => `${x.name} ${x.dose} ${x.times.join("、") || "按需"} — ${x.taken_today ? "已服" : "未服"}`, "无用药计划")),
-    section("🧠 记忆", isOpen("🧠 记忆", true),
-      el("p", { className: "muted", textContent: `工作窗口 ${m.window_turns} 句 · 情景 ${m.episode_total} 条（未巩固 ${m.episode_unconsolidated}）` }),
-      el("div", { className: "group-title", textContent: "记住的事 / 洞察" }),
-      list(m.notes, (x) => `${x.insight ? "🔮 " : "📌 "}${x.remind_date ? `[${x.remind_date}] ` : ""}${x.content}`, "暂无"),
-      el("div", { className: "group-title", textContent: "近期情景" }),
-      list(m.episodes, (x) => `${x.time}${x.consolidated ? "" : "（未巩固）"} ${x.summary}`, "暂无（多聊几轮后会被切分成情景）"),
-      el("div", { className: "group-title", textContent: "主题场景 · 有效前瞻" }),
-      list(m.scenes, (x) => x, "暂无场景（点“过 1 小时”触发巩固）"),
-      list(m.foresights, (x) => `[${x.due || "无期限"}] ${x.content}`, "暂无前瞻"),
-      el("div", { className: "group-title", textContent: "老人画像 · 即时印象" }),
-      el("p", { className: "empty", textContent: m.profile_text || "（暂无画像）" }),
-      el("p", { className: "empty", textContent: m.running_summary || "（暂无即时印象）" })),
-    section("👵 档案", isOpen("👵 档案", false),
-      list([
-        `${p.name}，${p.age}岁；${p.conditions.join("、") || "无慢性病"}`,
-        `住址：${p.address || "（未登记）"}`,
-        `过敏：${p.allergies.join("、") || "（无）"}`,
-        `联系人：${p.contacts.join("、") || "（无）"}`,
-      ], (x) => x, "")),
-  );
-}
-
-// ---------- 初始化 ----------
-function selectElder() {
-  const e = curElder();
-  const box = $("#remind-box");
-  box.replaceChildren();
-  e.med_times.forEach((t) => {
-    const b = el("button", { type: "button", textContent: `💊 到点 ${t}` });
-    b.title = "模拟到点，机器人主动提醒吃药";
-    b.addEventListener("click", () => run(() => remind(t)));
-    box.append(b);
-  });
-  if (!history.has(e.id)) history.set(e.id, [{ who: "bot", text: `${e.name}，我在呢。今天感觉怎么样呀？` }]);
-  renderLog();
-  return refresh();
-}
-async function newSession() {
-  if (sid) api("DELETE", `/api/sessions/${sid}`).catch(() => {});
-  const r = await api("POST", "/api/sessions");
-  sid = r.sid; elders = r.elders; history.clear();
-  $("#llm").textContent = r.llm === "online" ? "真实 LLM 对话" : "离线模板回复（未接入 LLM）";
-  $("#llm").className = "badge " + (r.llm === "online" ? "online" : "offline");
-  $("#text").maxLength = r.max_text;
-  const sel = $("#elder");
-  sel.replaceChildren(...elders.map((e) => el("option", { value: e.id, textContent: `${e.name} · ${e.age}岁 · ${e.conditions.join("、")}` })));
-  await selectElder();
-}
-async function init() {
+  if (!text || busy) return;
+  const log = $("#log");
+  log.append(bubble("user", text));
+  const pending = bubble("bot", "……");
+  log.append(pending);
+  scrollEnd();
   setBusy(true);
   try {
-    scenarios = await api("GET", "/api/scenarios");
-    const chips = $("#chips");
-    const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    const all = Object.values(scenarios).flat();
-    const dice = el("button", { type: "button", textContent: "🎲 随机" });
-    dice.addEventListener("click", () => run(() => say(rnd(all))));
-    chips.append(dice);
-    for (const [cat, lines] of Object.entries(scenarios)) {
-      const b = el("button", { type: "button", textContent: cat });
-      b.addEventListener("click", () => run(() => say(rnd(lines))));
-      chips.append(b);
-    }
-    await newSession();
+    const r = await api("POST", "/api/chat", { text });
+    pending.replaceWith(bubble("bot", r.reply, tagFor(r.level, r.actions)));
   } catch (e) {
-    $("#log").append(el("div", { className: "msg sys", textContent: `启动失败：${e.message}` }));
-    return;
+    pending.remove();
+    if (e.status === 401) { showAuth("登录已过期，请重新登录"); return; }
+    log.append(bubble("sys", `出错了：${e.message}`));
   } finally {
     setBusy(false);
+    scrollEnd();
   }
 }
 
+// ---------- 事件 ----------
+$("#tab-login").addEventListener("click", () => selectTab("login"));
+$("#tab-register").addEventListener("click", () => selectTab("register"));
+
+async function submitAuth(ev, path, payload) {
+  ev.preventDefault();
+  const btn = ev.target.querySelector("button[type=submit]");
+  btn.disabled = true; $("#auth-error").textContent = "";
+  try {
+    await showChat(await api("POST", path, payload));
+    ev.target.reset();
+  } catch (e) {
+    $("#auth-error").textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("#login-form").addEventListener("submit", (ev) =>
+  submitAuth(ev, "/api/login", { username: $("#l-user").value.trim(), password: $("#l-pass").value }));
+$("#register-form").addEventListener("submit", (ev) =>
+  submitAuth(ev, "/api/register", {
+    username: $("#r-user").value.trim(), password: $("#r-pass").value,
+    name: $("#r-name").value.trim(), age: Number($("#r-age").value),
+    invite_code: $("#r-invite").value.trim(),
+  }));
+$("#logout").addEventListener("click", async () => {
+  try { await api("POST", "/api/logout"); } catch (_) {}
+  showAuth();
+});
 $("#form").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const t = $("#text").value;
   $("#text").value = "";
-  run(() => say(t));
+  say(t);
 });
-$("#elder").addEventListener("change", () => run(selectElder));
-$("#silence").addEventListener("click", () => run(silence));
-$("#pulse").addEventListener("click", () => run(pulse));
-$("#restart").addEventListener("click", () => run(newSession));
-init();
+
+async function applyAuthConfig() {
+  let mode = "invite";
+  try { mode = (await api("GET", "/api/auth-config")).registration; } catch (_) {}
+  $("#invite-box").hidden = mode !== "invite";
+  $("#r-invite").required = mode === "invite";
+}
+
+(async function init() {
+  applyAuthConfig();
+  try {
+    await showChat(await api("GET", "/api/me"));
+  } catch (e) {
+    showAuth(e.status === 401 ? "" : `启动失败：${e.message}`);
+  }
+})();
 </script>
 </body>
 </html>

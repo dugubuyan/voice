@@ -280,6 +280,14 @@ class FakeLLMClient:
             elif "药" in text and not any(i["name"].startswith("confirm") for i in intents):
                 intents.append({"name": "query_medication", "slots": {"scope": "history"}})
 
+        # 联网搜索：仅在"明确提问"外部实时信息时触发（陈述句如"今天天气真好"仍是闲聊）
+        if not intents:
+            ask_kw = ["怎么样", "如何", "预报", "冷不冷", "热不热", "下雨", "会不会", "吗", "？", "?"]
+            weather_q = "天气" in text and any(k in text for k in ask_kw)
+            news_q = "新闻" in text and any(k in text for k in ["有什么", "最新", "说说", "讲讲"])
+            if weather_q or news_q:
+                intents.append({"name": "web_search", "slots": {"query": text.strip("？?。 ")[:30]}})
+
         if not intents:
             intents.append({"name": "chitchat", "slots": {}})
 

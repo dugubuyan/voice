@@ -31,6 +31,7 @@ app/
   notify/              家属通知（控制台，可替换短信/微信）
   agent/               LLM 接口 + 系统 Prompt + 对话大脑 + 统一条件触发引擎
   cli.py               文本演示入口
+demo/                  网页服务：注册 / 登录 + 每个用户独立的对话历史与记忆（详见 demo/README.md）
 voice/server.py        语音层骨架（Pipecat + ElevenLabs，待启用）
 seed/seed_data.py      4 位虚构老人档案与用药计划
 tests/                 200+ 个测试，覆盖生活场景与记忆链路（切分/巩固/召回/触发/属性测试）
@@ -56,6 +57,56 @@ python -m seed.seed_data
 # 5. 启动文本演示
 python -m app.cli
 ```
+
+## 网页服务（注册 / 登录）
+
+浏览器里注册、登录后和机器人对话。每个用户有独立的对话历史和记忆，互相不可见。
+
+### 启动
+
+```bash
+# 1. 安装依赖（在上面的基础依赖之外，多装 fastapi / uvicorn）
+pip install -r requirements.txt -r demo/requirements.txt
+
+# 2. 配置 .env（至少配好 LLM key；需要联网搜索再配 VOLCANO_API_KEY）
+
+# 3. 启动（仓库根目录；必须单进程，不要加 --workers）
+python -m uvicorn demo.server:app --host 0.0.0.0 --port 8080
+```
+
+浏览器打开 `http://localhost:8080`。健康检查：`/healthz`。
+
+- 数据保存在 `data/`（`accounts.db` 存账号，`users/<id>.db` 是每个用户独立的记忆库），可用 `DATA_DIR` 改位置。**部署时务必持久化并备份。**
+- 公网部署请放在 HTTPS 反向代理后面，并转发 `X-Forwarded-Proto`。
+- 部署前请把 `SETUP_PASSCODE`（设置模式口令，默认 `0000`）改成自己的值。
+
+### 邀请码
+
+注册需要**一次性邀请码**：每个码只能注册一个账号，用过即失效。服务启动后，在**同一台机器、仓库根目录**用下面的命令管理（与服务共用同一个 `DATA_DIR`，不需要停服务）：
+
+```bash
+python -m demo.invites new -n 5 --note "内测第一批"   # 生成 5 个码，备注可选
+python -m demo.invites list                            # 查看每个码是 未使用 / 已使用（谁用的）/ 已作废
+python -m demo.invites revoke 3                        # 作废第 3 号（仅限未使用的）
+```
+
+使用流程：
+
+1. 运行 `new` 生成邀请码，形如 `K7M2-Q9XD-4HTP`，**明文只显示这一次**，请当场复制发给对方。
+2. 对方打开页面，点「注册」，填写用户名、密码、称呼、年龄和邀请码，提交即可进入。
+3. 该码随即作废，再次使用会提示“邀请码无效或已被使用”。
+
+说明：
+
+- 输入时不区分大小写，连字符可有可无。
+- 注册失败（如用户名已被占用）不会消耗邀请码，改正后可直接重试。
+- 库里只存邀请码的哈希，没发出去又丢了的码找不回来，重新生成即可。
+- 同一来源 IP 连续猜错 10 次后，15 分钟内无法再注册。
+- 已有账号登录不需要邀请码。
+- Docker 部署时在容器内执行：`docker exec <容器名> python -m demo.invites new -n 5`。
+- 如确需开放注册（不推荐，任何人都能注册并消耗你的 LLM 额度），设置环境变量 `REGISTER_OPEN=true`。
+
+更多配置项（登录有效期、每日对话上限等）见 [demo/README.md](demo/README.md)。
 
 ## 演示指令（CLI 内）
 

@@ -21,6 +21,9 @@ from app.agent.prompts import SUMMARY_PROMPT, build_system_prompt
 from app.agent.profile_slots import SLOT_REGISTRY, SlotApplyContext, resolve_field
 from app.agent.runtime import ElderRuntime, PendingSlot, Turn
 from app.agent.timectx import build_time_context
+from app.agent.websearch import (
+    WebSearchClient, WebSearchError, build_search_injection, get_web_search,
+)
 from app.appointment.service import AppointmentService
 from app.config import config
 from app.emergency import detector
@@ -82,9 +85,14 @@ class TurnResult:
 
 
 class Brain:
-    def __init__(self, session: Session, llm: LLMClient, notifier: Notifier) -> None:
+    def __init__(
+        self, session: Session, llm: LLMClient, notifier: Notifier,
+        web_search: WebSearchClient | None = None,
+    ) -> None:
         self._session = session
         self._llm = llm
+        # 联网搜索客户端：显式传入优先（测试注入），否则按配置创建；缺 key 时为 None
+        self._web = web_search if web_search is not None else get_web_search()
         self._notifier = notifier
         self._profiles = ProfileRepository(session)
         self._events = EventStore(session)
@@ -272,6 +280,16 @@ class Brain:
                 return TurnResult(
                     reply="要修改资料得先进入设置模式哦。您可以说“进入设置模式”，再把口令告诉我。",
                     kind="mode", data={"mode": runtime.mode},
+                )
+            # 外部实时信息：先联网查，结果作为额外上下文交给 LLM 用口语讲出来。
+            # 与结构化意图同句出现时以结构化回复为准（不联网）。
+            web = next((i for i in intents if i.name == "web_search"), None)
+            if web is not None:
+                query = str(web.slots.get("query") or text)
+                injection, meta = self._web_search_context(query)
+                return self._handle_chat(
+                    runtime, on_token=on_token, extra_context=injection,
+                    data={"web_search": meta},
                 )
             return self._handle_chat(runtime, on_token=on_token)
 
@@ -734,8 +752,35 @@ class Brain:
                 pass
             return False
 
+    # ---- 联网搜索 ----
+    def _web_search_context(self, query: str) -> tuple[str, dict]:
+        """执行联网搜索，返回 (注入 LLM 的 system 文本, 元数据)。
+
+        任何失败（未配置/超时/鉴权/接口报错）都降级为"如实告知查不了"的提示，
+        绝不抛出，也不让 LLM 凭记忆编造实时信息。
+        """
+        query = query.strip()[:100]
+        if self._web is None:
+            return (
+                build_search_injection(query, None, "未配置联网搜索"),
+                {"query": query, "ok": False, "error": "disabled"},
+            )
+        try:
+            hits = self._web.search(query)
+        except WebSearchError as e:
+            return (
+                build_search_injection(query, None, str(e)),
+                {"query": query, "ok": False, "error": str(e)},
+            )
+        return (
+            build_search_injection(query, hits, None),
+            {"query": query, "ok": True, "count": len(hits)},
+        )
+
     # ---- 闲聊上下文组装（_handle_chat 使用）----
-    def _build_chat_messages(self, runtime: ElderRuntime) -> list[dict]:
+    def _build_chat_messages(
+        self, runtime: ElderRuntime, extra_context: str | None = None
+    ) -> list[dict]:
         """组装闲聊上下文：档案+召回+回顾+时间+窗口。"""
         tctx = build_time_context(
             datetime.now(),
@@ -761,6 +806,8 @@ class Brain:
                 ),
             })
         messages.append({"role": "system", "content": tctx.to_injection()})
+        if extra_context:
+            messages.append({"role": "system", "content": extra_context})
         messages.extend(t.to_llm_message() for t in runtime.window)
         return messages
 
@@ -769,12 +816,14 @@ class Brain:
         self,
         runtime: ElderRuntime,
         on_token=None,   # Callable[[str], None] | None，每个 token 到达时调用
+        extra_context: str | None = None,   # 额外 system 上下文（如联网搜索结果）
+        data: dict | None = None,
     ) -> TurnResult:
         """纯闲聊：LLM 流式，边收 token 边调 on_token 回调（供 CLI 逐字打印）。
 
         reply 收集完整文本；on_token=None 时静默收集。
         """
-        messages = self._build_chat_messages(runtime)
+        messages = self._build_chat_messages(runtime, extra_context)
         reply = ""
         # 模型偶发返回空正文：重试一次，仍为空则用兜底话术，
         # 避免空回复被当成一轮助手发言写进对话窗口。
@@ -791,7 +840,7 @@ class Brain:
             reply = "嗯，我听着呢，您慢慢说。"
             if on_token is not None:
                 on_token(reply)
-        return TurnResult(reply=reply, kind="chat")
+        return TurnResult(reply=reply, kind="chat", data=data or {})
 
     # ---- 预约上下文（供 get_runtime 注入）----
     def _appointments_context(self, elder_id: int, today: date) -> str:

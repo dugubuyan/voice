@@ -1,193 +1,228 @@
-"""网页演示服务（FastAPI）。
+"""陪伴机器人网页服务（FastAPI）：注册 / 登录 + 每个用户独立的会话与记忆。
 
-启动：  python -m demo.server            -> 监听 0.0.0.0:8080（HOST / PORT 可改）
-等价：  uvicorn demo.server:app --host 0.0.0.0 --port 8080   （在仓库根目录执行）
+启动（仓库根目录，务必单进程，不要加 --workers）：
+  python3 -m uvicorn demo.server:app --host 0.0.0.0 --port 8080
 
-环境变量（均可选）：
-  DEMO_ACCESS_CODE      设置后整站启用 HTTP Basic 认证（用户名任意，密码=该值）。
-                        公网部署且配置了真实 LLM key 时强烈建议设置，否则任何人都能消耗你的额度。
-  DEMO_MAX_SESSIONS     同时在线的访客沙箱上限，默认 30
-  DEMO_SESSION_TTL_MIN  沙箱空闲回收时间（分钟），默认 30
-  DEMO_MAX_TURNS        单个沙箱最多对话轮数，默认 80
-  LLM_PROVIDER / DEEPSEEK_API_KEY / OPENAI_API_KEY ...  与主程序一致，未配置则用离线模板回复
+环境变量（均可选，详见 demo/README.md）：
+  DATA_DIR              数据目录，默认 <仓库>/data（accounts.db + users/<id>.db）
+  注册需要一次性邀请码，用 `python -m demo.invites new -n 5` 生成（REGISTER_OPEN=true 可开放注册，不推荐）
+  SESSION_DAYS          登录有效期（天），默认 30
+  USER_DAILY_TURNS      单用户每天对话上限，默认 300
+  WORKSPACE_TTL_MIN     用户记忆在内存中的保留时间（分钟），默认 60
+  LLM_PROVIDER / DEEPSEEK_API_KEY / OPENAI_API_KEY / VOLCANO_API_KEY ...  与主程序一致
 """
 from __future__ import annotations
 
-import os
-import re
-import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.agent.llm import FakeLLMClient, get_llm
-from demo.sandbox import (
-    Sandbox,
-    SandboxError,
-    SandboxFull,
-    SandboxPool,
-    TurnLimitReached,
-)
-from demo.scenarios import SCENARIOS
+from demo import accounts, settings, workspace
+from demo.accounts import Account, AccountError, TooManyAttempts
 
 _STATIC = Path(__file__).parent / "static"
-_ACCESS_CODE = os.getenv("DEMO_ACCESS_CODE") or ""
-_MAX_TEXT = 200
-_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_COOKIE = "session"
 
 _llm = get_llm()
-_pool = SandboxPool(
-    _llm,
-    max_sessions=int(os.getenv("DEMO_MAX_SESSIONS", "30")),
-    ttl_sec=int(os.getenv("DEMO_SESSION_TTL_MIN", "30")) * 60,
-    max_turns=int(os.getenv("DEMO_MAX_TURNS", "80")),
-)
-
-_basic = HTTPBasic(auto_error=False)
+_pool = workspace.WorkspacePool(_llm)
 
 
-def _require_auth(cred: HTTPBasicCredentials | None = Depends(_basic)) -> None:
-    if not _ACCESS_CODE:
-        return
-    ok = cred is not None and secrets.compare_digest(
-        cred.password.encode("utf-8"), _ACCESS_CODE.encode("utf-8")
-    )
-    if not ok:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "需要访问口令",
-            headers={"WWW-Authenticate": 'Basic realm="demo"'},
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    if settings.REGISTRATION_MODE == "open":
+        if not isinstance(_llm, FakeLLMClient):
+            print("[warn] 开放注册且已接入真实 LLM：任何人都能注册并消耗你的额度，建议去掉 REGISTER_OPEN。")
+    else:
+        print(
+            f"[info] 注册需一次性邀请码，当前未使用 {accounts.unused_invite_count()} 个；"
+            "生成：python -m demo.invites new -n 5"
         )
+    stop = _pool.start_pulse_thread()
+    try:
+        yield
+    finally:
+        stop.set()
+        _pool.close_all()
 
 
 app = FastAPI(
-    title="老人看护机器人演示",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+    title="陪伴机器人", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan
 )
-# 除 /healthz 外的所有路由都挂在带鉴权的 router 上
-router = APIRouter(dependencies=[Depends(_require_auth)])
 
 
-def _sandbox(sid: str) -> Sandbox:
-    sb = _pool.get(sid)
-    if sb is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "演示会话已过期，请重新开始")
-    return sb
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    elif request.url.path == "/":
+        # 页面每次都向服务器校验，部署新版本后用户不会继续看到旧页面
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
-def _guard(fn, *args):
-    try:
-        return fn(*args)
-    except TurnLimitReached as exc:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
-    except SandboxError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    except ValueError as exc:  # 如 Brain.get_runtime 找不到老人
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+# ---------------- 登录态 ----------------
+def _set_cookie(request: Request, response: Response, token: str) -> None:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    response.set_cookie(
+        _COOKIE, token,
+        max_age=settings.SESSION_DAYS * 86400,
+        httponly=True, samesite="lax", secure=(proto == "https"), path="/",
+    )
+
+
+def current_user(request: Request) -> Account:
+    acct = accounts.account_for_token(request.cookies.get(_COOKIE))
+    if acct is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "请先登录")
+    return acct
+
+
+def _me(acct: Account) -> dict:
+    return {
+        "username": acct.username,
+        "name": acct.display_name,
+        "llm": "offline" if isinstance(_llm, FakeLLMClient) else "online",
+        "max_text": settings.MAX_TEXT,
+    }
+
+
+# ---------------- 请求体 ----------------
+class RegisterIn(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    name: str = Field(min_length=1, max_length=20)
+    age: int = Field(ge=1, le=120)
+    invite_code: str = Field(default="", max_length=128)
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class ChatIn(BaseModel):
-    elder_id: int
-    text: str = Field(min_length=1, max_length=_MAX_TEXT)
+    text: str = Field(min_length=1, max_length=settings.MAX_TEXT)
 
 
-class ElderIn(BaseModel):
-    elder_id: int
-
-
-class RemindIn(ElderIn):
-    time: str
-
-
-class PulseIn(BaseModel):
-    minutes: int = Field(default=60, ge=1, le=24 * 60)
-
-
-# ---- 页面 ----
-@router.get("/", include_in_schema=False)
+# ---------------- 页面 ----------------
+@app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(_STATIC / "index.html")
 
 
-# 健康检查：不鉴权，供部署平台探活（不泄露任何信息）
 @app.get("/healthz", include_in_schema=False)
 def healthz() -> dict:
     return {"ok": True}
 
 
-# ---- API ----
-@router.get("/api/scenarios")
-def scenarios() -> dict:
-    return SCENARIOS
+# ---------------- 账号 ----------------
+@app.get("/api/auth-config")
+def auth_config() -> dict:
+    """前端据此决定是否显示注册、邀请码是否必填（不泄露邀请码本身）。"""
+    return {"registration": settings.REGISTRATION_MODE}
 
 
-@router.post("/api/sessions")
-def create_session() -> dict:
+@app.post("/api/register")
+def register(body: RegisterIn, request: Request, response: Response) -> dict:
+    invite_id: int | None = None
+    if settings.REGISTRATION_MODE == "invite":
+        ip = request.client.host if request.client else "unknown"
+        if accounts.invite_limiter.blocked(ip):
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "尝试次数过多，请稍后再试")
+        # 原子占用：同一个码并发提交也只会有一个请求成功
+        invite_id = accounts.consume_invite(body.invite_code)
+        if invite_id is None:
+            accounts.invite_limiter.fail(ip)
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "邀请码无效或已被使用")
+
+    def _abort(code: int, msg: str, acct: Account | None = None) -> HTTPException:
+        # 注册没成功：回滚半成品账号，并把邀请码还回去，用户改正后可直接重试
+        if acct is not None:
+            accounts.delete_user(acct.id)
+            workspace.remove_data(acct.id)
+        if invite_id is not None:
+            accounts.release_invite(invite_id)
+        return HTTPException(code, msg)
+
     try:
-        sid, sb = _pool.create()
-    except SandboxFull as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
-    return {
-        "sid": sid,
-        "llm": "offline" if isinstance(_llm, FakeLLMClient) else "online",
-        "max_text": _MAX_TEXT,
-        "elders": sb.elders(),
-    }
+        acct = accounts.create_user(body.username, body.password, body.name)
+    except AccountError as exc:
+        raise _abort(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception:
+        raise _abort(status.HTTP_500_INTERNAL_SERVER_ERROR, "注册失败，请稍后再试") from None
+    try:
+        workspace.provision(acct.id, acct.display_name, body.age)
+    except Exception:
+        raise _abort(status.HTTP_500_INTERNAL_SERVER_ERROR, "注册失败，请稍后再试", acct) from None
+    if invite_id is not None:
+        accounts.bind_invite(invite_id, acct.id)
+    _set_cookie(request, response, accounts.create_session(acct.id))
+    return _me(acct)
 
 
-@router.delete("/api/sessions/{sid}", status_code=204, response_class=Response)
-def delete_session(sid: str) -> Response:
-    _pool.drop(sid)
-    return Response(status_code=204)
+@app.post("/api/login")
+def login(body: LoginIn, request: Request, response: Response) -> dict:
+    try:
+        acct = accounts.authenticate(body.username, body.password)
+    except TooManyAttempts as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+    if acct is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
+    _set_cookie(request, response, accounts.create_session(acct.id))
+    return _me(acct)
 
 
-@router.post("/api/sessions/{sid}/chat")
-def chat(sid: str, body: ChatIn) -> dict:
-    return _guard(_sandbox(sid).chat, body.elder_id, body.text.strip())
+@app.post("/api/logout", status_code=204, response_class=Response)
+def logout(request: Request) -> Response:
+    accounts.revoke_session(request.cookies.get(_COOKIE))
+    resp = Response(status_code=204)
+    resp.delete_cookie(_COOKIE, path="/")
+    return resp
 
 
-@router.post("/api/sessions/{sid}/remind")
-def remind(sid: str, body: RemindIn) -> dict:
-    if not _HHMM.match(body.time):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "时间格式应为 HH:MM")
-    texts = _guard(_sandbox(sid).remind, body.elder_id, body.time)
-    return {"texts": texts}
+@app.get("/api/me")
+def me(acct: Account = Depends(current_user)) -> dict:
+    return _me(acct)
 
 
-@router.post("/api/sessions/{sid}/silence")
-def silence(sid: str, body: ElderIn) -> dict:
-    return {"reply": _guard(_sandbox(sid).silence, body.elder_id)}
+# ---------------- 对话 ----------------
+def _workspace(acct: Account) -> workspace.Workspace:
+    try:
+        return _pool.get(acct.id)
+    except workspace.WorkspaceError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
 
 
-@router.post("/api/sessions/{sid}/pulse", status_code=204, response_class=Response)
-def pulse(sid: str, body: PulseIn) -> Response:
-    _guard(_sandbox(sid).pulse, body.minutes)
-    return Response(status_code=204)
+@app.post("/api/chat")
+def chat(body: ChatIn, acct: Account = Depends(current_user)) -> dict:
+    ws = _workspace(acct)
+    try:
+        return ws.chat(body.text.strip())
+    except workspace.DailyLimitReached as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
 
 
-@router.get("/api/sessions/{sid}/state")
-def state(sid: str, elder_id: int) -> dict:
-    return _guard(_sandbox(sid).state, elder_id)
-
-
-app.include_router(router)
+@app.get("/api/history")
+def history(
+    before: int | None = None, limit: int = 50, acct: Account = Depends(current_user)
+) -> dict:
+    limit = max(1, min(limit, 100))
+    return {"messages": _workspace(acct).history(limit, before)}
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
-    if not _ACCESS_CODE and not isinstance(_llm, FakeLLMClient):
-        print(
-            "[warn] 已接入真实 LLM 且未设置 DEMO_ACCESS_CODE：任何能访问该端口的人"
-            "都能消耗你的 LLM 额度。建议：DEMO_ACCESS_CODE=<口令> python -m demo.server"
-        )
     uvicorn.run(
-        app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8080")),
+        app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8080"))
     )

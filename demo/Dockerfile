@@ -1,5 +1,5 @@
 # 在仓库根目录构建：docker build -f demo/Dockerfile -t eldercare-demo .
-# 运行：docker run -p 8080:8080 -e DEMO_ACCESS_CODE=xxx -e DEEPSEEK_API_KEY=xxx eldercare-demo
+# 运行：docker run -p 8080:8080 -v eldercare-data:/srv/data -e DEEPSEEK_API_KEY=xxx eldercare-demo
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
@@ -13,8 +13,10 @@ COPY app ./app
 COPY seed ./seed
 COPY demo ./demo
 
-# 非 root 运行；演示数据全在内存里，不需要可写目录
-RUN useradd --no-create-home --uid 10001 app
+# 非 root 运行；账号与记忆库写入 DATA_DIR，部署时请把它挂载为持久卷
+ENV DATA_DIR=/srv/data
+RUN useradd --no-create-home --uid 10001 app && mkdir -p /srv/data && chown app /srv/data
+VOLUME /srv/data
 USER app
 
 EXPOSE 8080
